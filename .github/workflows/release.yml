@@ -111,7 +111,7 @@ jobs:
         id: changelog
         run: |
           # Find the previous tag on our own v1.0.x line to scope the changelog.
-          # Excludes upstream fork tags (v1.1+ / v1.4.x) and beta tags.
+          # Excludes upstream fork tags (v1.0.10+ / v1.1+) and beta tags.
           CURRENT_TAG="${GITHUB_REF_NAME}"
           PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v1\.0\.[0-9]$' | grep -v "^${CURRENT_TAG}$" | head -1 || true)
           if [ -n "${PREV_TAG}" ]; then
@@ -122,7 +122,7 @@ jobs:
             COMPARE_BASE=$(git rev-list --max-parents=0 HEAD | head -1)
           fi
           {
-            echo "body<<'EOF'"
+            echo "body<<EOF"
             echo "## What's Changed"
             echo ""
             git log ${RANGE} --no-decorate --pretty=format:"- %s" 2>/dev/null | grep -vE "^- chore: bump version" || true
