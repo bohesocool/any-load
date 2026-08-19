@@ -107,12 +107,36 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the previous tag on our own v1.0.x line to scope the changelog.
+          # Excludes upstream fork tags (v1.1+ / v1.4.x) and beta tags.
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v1\.0\.[0-9]$' | grep -v "^${CURRENT_TAG}$" | head -1 || true)
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            COMPARE_BASE="${PREV_TAG}"
+          else
+            RANGE="${CURRENT_TAG}"
+            COMPARE_BASE=$(git rev-list --max-parents=0 HEAD | head -1)
+          fi
+          {
+            echo "body<<'EOF'"
+            echo "## What's Changed"
+            echo ""
+            git log ${RANGE} --no-decorate --pretty=format:"- %s" 2>/dev/null | grep -vE "^- chore: bump version" || true
+            echo ""
+            echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${COMPARE_BASE}...${CURRENT_TAG}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/*
           draft: false
-          generate_release_notes: true
           name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
