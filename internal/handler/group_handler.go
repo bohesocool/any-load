@@ -63,6 +63,8 @@ type GroupCreateRequest struct {
 	Config              map[string]any      `json:"config"`
 	HeaderRules         []models.HeaderRule `json:"header_rules"`
 	ProxyKeys           string              `json:"proxy_keys"`
+	ProtocolConversion  bool                `json:"protocol_conversion"`
+	UpstreamFormats     []string            `json:"upstream_formats"`
 }
 
 // CreateGroup handles the creation of a new group.
@@ -89,6 +91,8 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		Config:              req.Config,
 		HeaderRules:         req.HeaderRules,
 		ProxyKeys:           req.ProxyKeys,
+		ProtocolConversion:  req.ProtocolConversion,
+		UpstreamFormats:     req.UpstreamFormats,
 	}
 
 	group, err := s.GroupService.CreateGroup(c.Request.Context(), params)
@@ -132,6 +136,8 @@ type GroupUpdateRequest struct {
 	Config              map[string]any      `json:"config"`
 	HeaderRules         []models.HeaderRule `json:"header_rules"`
 	ProxyKeys           *string             `json:"proxy_keys,omitempty"`
+	ProtocolConversion  *bool               `json:"protocol_conversion,omitempty"`
+	UpstreamFormats     []string            `json:"upstream_formats"`
 }
 
 type GroupReorderItemRequest struct {
@@ -209,6 +215,12 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		params.HeaderRules = &rules
 	}
 
+	params.ProtocolConversion = req.ProtocolConversion
+	if req.UpstreamFormats != nil {
+		params.UpstreamFormats = req.UpstreamFormats
+		params.HasUpstreamFormats = true
+	}
+
 	group, err := s.GroupService.UpdateGroup(c.Request.Context(), uint(id), params)
 	if s.handleGroupError(c, err) {
 		return
@@ -263,6 +275,8 @@ type GroupResponse struct {
 	Config              datatypes.JSONMap   `json:"config"`
 	HeaderRules         []models.HeaderRule `json:"header_rules"`
 	ProxyKeys           string              `json:"proxy_keys"`
+	ProtocolConversion  bool                `json:"protocol_conversion"`
+	UpstreamFormats     datatypes.JSON      `json:"upstream_formats"`
 	LastValidatedAt     *time.Time          `json:"last_validated_at"`
 	CreatedAt           time.Time           `json:"created_at"`
 	UpdatedAt           time.Time           `json:"updated_at"`
@@ -307,6 +321,8 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		Config:              group.Config,
 		HeaderRules:         headerRules,
 		ProxyKeys:           group.ProxyKeys,
+		ProtocolConversion:  group.ProtocolConversion,
+		UpstreamFormats:     group.UpstreamFormats,
 		LastValidatedAt:     group.LastValidatedAt,
 		CreatedAt:           group.CreatedAt,
 		UpdatedAt:           group.UpdatedAt,

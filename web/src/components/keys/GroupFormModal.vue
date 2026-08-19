@@ -78,6 +78,8 @@ interface GroupFormData {
   configItems: ConfigItem[];
   header_rules: HeaderRuleItem[];
   proxy_keys: string;
+  protocol_conversion: boolean;
+  upstream_formats: string[];
   group_type?: string;
 }
 
@@ -103,10 +105,19 @@ const formData = reactive<GroupFormData>({
   configItems: [] as ConfigItem[],
   header_rules: [] as HeaderRuleItem[],
   proxy_keys: "",
+  protocol_conversion: false,
+  upstream_formats: [],
   group_type: "standard",
 });
 
 const channelTypeOptions = ref<{ label: string; value: string }[]>([]);
+// Upstream format options for protocol conversion. All four formats supported.
+const upstreamFormatOptions = ref<{ label: string; value: string }[]>([
+  { label: "OpenAI Chat", value: "openai-chat" },
+  { label: "OpenAI Responses", value: "openai-response" },
+  { label: "Anthropic Messages", value: "anthropic" },
+  { label: "Gemini", value: "gemini" },
+]);
 const configOptions = ref<GroupConfigOption[]>([]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
@@ -304,6 +315,8 @@ function resetForm() {
     configItems: [],
     header_rules: [],
     proxy_keys: "",
+    protocol_conversion: false,
+    upstream_formats: [],
     group_type: "standard",
   });
 
@@ -350,6 +363,8 @@ function loadGroupData() {
       action: (rule.action as "set" | "remove") || "set",
     })),
     proxy_keys: props.group.proxy_keys || "",
+    protocol_conversion: props.group.protocol_conversion || false,
+    upstream_formats: props.group.upstream_formats || [],
     group_type: props.group.group_type || "standard",
   });
 }
@@ -503,6 +518,12 @@ async function handleSubmit() {
       }
     }
 
+    // 协议转换开启时必须选择至少一个上游格式
+    if (formData.protocol_conversion && formData.upstream_formats.length === 0) {
+      message.error(t("keys.protocolConversionRequiresFormat"));
+      return;
+    }
+
     // 将configItems转换为config对象
     const config: Record<string, number | string | boolean> = {};
     formData.configItems.forEach((item: ConfigItem) => {
@@ -539,6 +560,8 @@ async function handleSubmit() {
           action: rule.action,
         })),
       proxy_keys: formData.proxy_keys,
+      protocol_conversion: formData.protocol_conversion,
+      upstream_formats: formData.protocol_conversion ? formData.upstream_formats : [],
     };
 
     let res: Group;
@@ -664,6 +687,49 @@ async function handleSubmit() {
                 :min="0"
                 :placeholder="t('keys.sortValue')"
                 style="width: 100%"
+              />
+            </n-form-item>
+          </div>
+
+          <!-- Protocol conversion -->
+          <div class="form-row">
+            <n-form-item :label="t('keys.protocolConversion')" path="protocol_conversion" class="form-item-half">
+              <template #label>
+                <div class="form-label-with-tooltip">
+                  {{ t("keys.protocolConversion") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon" />
+                    </template>
+                    {{ t("keys.protocolConversionTooltip") }}
+                  </n-tooltip>
+                </div>
+              </template>
+              <n-switch v-model:value="formData.protocol_conversion" />
+            </n-form-item>
+
+            <n-form-item
+              v-if="formData.protocol_conversion"
+              :label="t('keys.upstreamFormats')"
+              path="upstream_formats"
+              class="form-item-half"
+            >
+              <template #label>
+                <div class="form-label-with-tooltip">
+                  {{ t("keys.upstreamFormats") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon" />
+                    </template>
+                    {{ t("keys.upstreamFormatsTooltip") }}
+                  </n-tooltip>
+                </div>
+              </template>
+              <n-select
+                v-model:value="formData.upstream_formats"
+                :options="upstreamFormatOptions"
+                multiple
+                :placeholder="t('keys.selectUpstreamFormats')"
               />
             </n-form-item>
           </div>

@@ -16,13 +16,14 @@ Any-Loadは初期段階のフォークです。上流の機能セットに加え
 
 - **チャネルアフィニティ / スティッキールーティング** ✅ —— 同じ特徴（セッションヘッダー、body内の `session_id` / `prompt_cache_key` / 会話ID、または最初のメッセージハッシュ）を持つリクエストを、純粋なラウンドロビンではなく同じ（上流＋キー）ペアに固定します。上流のセッション状態やレートリミットの平滑化に有効です。グローバルおよびグループ単位で設定可能、バインディングにはTTLを設定し、バインドされたキーが利用不可の場合は自動フェイルオーバーします。
 - **キーごとの同時実行制限** ✅ —— グループ内の各キーの同時実行リクエスト数を制限（グループレベルでグローバル設定を上書き）。上限に達したキーはスキップされ、他の利用可能なキーにローテーションします。
-- **プロトコル変換**：プロキシ層で各社のネイティブAPIフォーマット間の相互変換（OpenAI ↔ Anthropic ↔ Gemini）を行い、クライアントは上流のネイティブプロトコルを意識せず統一エンドポイントを呼び出せるようにします。*（計画中・未実装）*
+- **プロトコル変換** ✅ —— プロキシ層で各社のネイティブAPIフォーマット（OpenAI Chat / OpenAI Responses / Anthropic / Gemini）間の相互変換を行い、双方向・ストリーミング・非ストリーミング対応、ツール呼び出しと画像を含みます。クライアントは任意のフォーマットで呼び出し、プロキシが上流のサポートするフォーマットに変換します。詳しくは [プロトコル変換](#プロトコル変換)。
 
 透過パススルー＋上流とキーの重み付けラウンドロビン。チャネルアフィニティとキーごとの同時実行制限はオプトインで、デフォルトは無効です。
 
 ## 特徴
 
 - **トランスペアレントプロキシ**: ネイティブAPIフォーマットの完全な保持、OpenAI、Google Gemini、Anthropic Claudeなどのフォーマットをサポート
+- **プロトコル変換**: グループ単位で設定可能な、サポートするAPIフォーマット（OpenAI Chat / Responses / Anthropic / Gemini）間の変換——双方向、ストリーミング+非ストリーミング、ツール呼び出しと画像対応
 - **インテリジェントキー管理**: グループベース管理、自動ローテーション、障害復旧を備えた高性能キープール
 - **ロードバランシング**: サービスの可用性を向上させる複数のアップストリームエンドポイント間の重み付けロードバランシング
 - **スマート障害処理**: サービスの継続性を確保する自動キーブラックリスト管理と復旧メカニズム
@@ -586,6 +587,75 @@ response = client.messages.create(
 > **重要な注意**: トランスペアレントプロキシサービスとして、Any-Loadはさまざまなアイサービスのネイティブ APIフォーマットと認証方法を完全に保持します。エンドポイントアドレスを置き換え、管理インターフェースで設定された**プロキシキー**を使用するだけで、シームレスな移行が可能です。
 
 </details>
+
+## プロトコル変換
+
+プロトコル変換は**オプトイン・グループ単位**の機能で、プロキシ層でサポートするLLM APIフォーマット間の相互変換を行います。クライアントはあるフォーマット（例: Anthropic `/v1/messages`）で呼び出し、リクエストを上流が実際にサポートするフォーマット（例: OpenAI `/v1/chat/completions`）に変換し、レスポンスをクライアントのフォーマットに戻します。これは [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) の挙動と同じです。
+
+変換は**双方向**（任意の入站 → 任意の上流）、**ストリーミング・非ストリーミング**両対応で、**ツール呼び出し**（定義・呼び出し・結果）と**画像**を含みます。
+
+### 2つのグループ設定
+
+| 設定 | 値 | 効果 |
+|---|---|---|
+| **プロトコル変換**（トグル） | オン / オフ | オフ = 純パススルー、以前と全く同じ |
+| **上流フォーマット**（複数選択） | `openai-chat` / `openai-response` / `anthropic` / `gemini` | **上流が受け付けられるフォーマット**を宣言 |
+
+入站（クライアント）フォーマットは**リクエストパスから自動検出**され、クライアントが宣言する必要はありません：
+
+| リクエストパス | 入站フォーマット |
+|---|---|
+| `/v1/chat/completions` | `openai-chat` |
+| `/v1/responses` | `openai-response` |
+| `/v1/messages` | `anthropic` |
+| `/v1beta/models/<model>:generateContent` / `:streamGenerateContent` | `gemini` |
+
+### ターゲットの選択方法（変換オン時）
+
+1. 入站フォーマットが**上流リストにある** → **そのままパススルー**、変換しない（スマートパススルー）。
+2. 入站フォーマットが**リストにない** → リストの**最初**のフォーマットに変換（「優先」ターゲット）。
+
+以下の場合は変換せず純パススルー：トグルオフ、リスト空、入站パスが変換対象でないエンドポイント（例: `/v1/models`）、入站フォーマットが上流で既にサポートされている。
+
+### 設定例
+
+**上流がOpenAI Chatのみサポート** —— `上流フォーマット = ["openai-chat"]`：
+
+| クライアント送信 | 実際の動作 |
+|---|---|
+| OpenAI Chat（`/v1/chat/completions`） | 入站chatがリストにあり → **パススルー** `/v1/chat/completions`、Bearer認証 |
+| OpenAI Responses（`/v1/responses`） | リストになし → **変換**してchatへ → `/v1/chat/completions`へ転送；レスポンスをResponsesに戻す |
+| Anthropic（`/v1/messages`） | リストになし → **変換**してchatへ → `/v1/chat/completions`へ転送；レスポンスをAnthropicに戻す |
+| Gemini（`:generateContent`） | リストになし → **変換**してchatへ → `/v1/chat/completions`へ転送；レスポンスをGeminiに戻す |
+
+→ クライアントがどのフォーマットを使っても、上流は常にOpenAI Chatを受け取ります。
+
+**上流がChatとResponsesの両方をサポート** —— `上流フォーマット = ["openai-chat", "openai-response"]`：
+
+| クライアント送信 | 実際の動作 |
+|---|---|
+| OpenAI Chat | リストにあり → **パススルー** `/v1/chat/completions` |
+| OpenAI Responses | リストにあり → **パススルー** `/v1/responses` |
+| Anthropic | リストになし → **リスト先頭**のフォーマット（chat）に変換 → `/v1/chat/completions` |
+| Gemini | リストになし → **リスト先頭**のフォーマット（chat）に変換 → `/v1/chat/completions` |
+
+> **リストの順序が重要**：優先ターゲットは常に**先頭**の項目です。Anthropic入站を*Responsesに*変換させたい場合は、responsesを先頭に：`["openai-response", "openai-chat"]`。（この場合chatクライアントもリストにあるためパススルーのままです。）
+
+### 対応する変換範囲
+
+- **フォーマット**：OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini —— 任意の相互変換、双方向。
+- **ツール呼び出し**：ツール定義（`function.parameters` ↔ `input_schema` ↔ `functionDeclarations` ↔ Responsesのフラットschema）、ツール呼び出し（`tool_calls` ↔ `tool_use` ↔ `functionCall` ↔ `function_call`）、ツール結果（`role:"tool"` ↔ `tool_result` ↔ `functionResponse` ↔ `function_call_output`）。
+- **画像**：`image_url`（URLまたは`data:` URI）↔ Anthropic `image` source（base64/URL）↔ Gemini `inline_data`（base64）↔ Responses `input_image`。
+
+### 注意事項と制限
+
+- **変換オフ** = フォーマットリストに関わらず純パススルー（元の挙動と同じ、リクエスト/レスポンスは解析も書き換えもされません）。
+- **ストリーミングのツール呼び出し**は各フォーマットのイベントタイプに翻訳（Anthropic `input_json_delta`、OpenAI `tool_calls[].function.arguments`のdelta、Responses `function_call_arguments.delta`、Geminiは呼び出し全体）。
+- **Gemini画像URL**：Geminiの`inline_data`はbase64必須。純`http(s)` URL画像（`data:` URIでない）は**HTTP 400で拒否**されます（プロキシは取得しません）——base64または`data:` URIを提供してください。
+- **Geminiにcall idなし**：Gemini解析時にツール呼び出しidを`name#index`で合成します。
+- 変換モードのエラーレスポンスは現在そのままパススルー（上流のエラーボディを入站フォーマットのエラー形状に翻訳は未対応）。
+- `param_overrides`は変換モードでは適用されません（OpenAI bodyのキーを対象とするため、フォーマット間で意味が異なります）。
+- 変換オン時は、グループの**チャネルタイプ**を上流の主要フォーマットと一致させることを推奨（ネイティブフォーマットのキー検証に使用）。
 
 ## 関連プロジェクト
 

@@ -16,13 +16,14 @@ Any-Load is an early-stage fork. Beyond the upstream feature set:
 
 - **Channel affinity / sticky routing** ✅ — bind requests that share a trait (session header, `session_id` / `prompt_cache_key` / conversation id in body, or first-message hash) to a consistent (upstream, key) pair instead of pure round-robin — useful for upstream session state and smoother rate-limit behavior. Configurable globally and per-group, with a TTL on bindings and automatic failover when a bound key is unavailable.
 - **Per-key concurrency limiting** ✅ — cap concurrent in-flight requests per key within a group (group-level override of the global setting); keys at capacity are skipped and rotation falls through to others.
-- **Protocol conversion**: translate between native LLM API formats (OpenAI ↔ Anthropic ↔ Gemini) at the proxy, so clients can call one unified endpoint regardless of the upstream's native protocol. *(planned, not yet implemented)*
+- **Protocol conversion** ✅ — translate between any supported LLM API format (OpenAI Chat / OpenAI Responses / Anthropic / Gemini) at the proxy, in both directions and for streaming + non-streaming, including tool calls and images. Clients can call with any format and the proxy converts it to a format the upstream supports. See [Protocol Conversion](#protocol-conversion).
 
 Transparent pass-through with weighted round-robin across upstreams and keys; channel affinity and per-key concurrency are opt-in (disabled by default).
 
 ## Features
 
 - **Transparent Proxy**: Complete preservation of native API formats, supporting OpenAI, Google Gemini, and Anthropic Claude among other formats
+- **Protocol Conversion**: Optional per-group conversion between any supported API format (OpenAI Chat / Responses / Anthropic / Gemini) — bidirectional, streaming + non-streaming, with tool-call and image support
 - **Intelligent Key Management**: High-performance key pool with group-based management, automatic rotation, and failure recovery
 - **Load Balancing**: Weighted load balancing across multiple upstream endpoints to enhance service availability
 - **Smart Failure Handling**: Automatic key blacklist management and recovery mechanisms to ensure service continuity
@@ -586,6 +587,75 @@ response = client.messages.create(
 > **Important Note**: As a transparent proxy service, Any-Load completely preserves the native API formats and authentication methods of various AI services. You only need to replace the endpoint address and use the **Proxy Key** configured in the management interface for seamless migration.
 
 </details>
+
+## Protocol Conversion
+
+Protocol Conversion is an **opt-in, per-group** feature that translates between any supported LLM API format at the proxy. A client can call with one format (e.g. Anthropic `/v1/messages`) and have the request converted to a format the upstream actually supports (e.g. OpenAI `/v1/chat/completions`), with the response converted back to the client's format. This mirrors the behavior of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
+
+Conversion is **bidirectional** (any inbound → any upstream), works for **both streaming and non-streaming** responses, and includes **tool calls** (definitions, calls, and results) and **images**.
+
+### Two group settings
+
+| Setting | Values | Effect |
+|---|---|---|
+| **Protocol Conversion** (开关) | on / off | off = pure pass-through, identical to before |
+| **Upstream Formats** (上游格式, multi-select) | `openai-chat` / `openai-response` / `anthropic` / `gemini` | declares **which formats the upstream can accept** |
+
+The inbound (client) format is **auto-detected from the request path** — the client does not declare it:
+
+| Request path | Inbound format |
+|---|---|
+| `/v1/chat/completions` | `openai-chat` |
+| `/v1/responses` | `openai-response` |
+| `/v1/messages` | `anthropic` |
+| `/v1beta/models/<model>:generateContent` / `:streamGenerateContent` | `gemini` |
+
+### How a target is chosen (when conversion is ON)
+
+1. If the inbound format **is in** the upstream-formats list → **pass through** unchanged (smart passthrough — no conversion).
+2. If the inbound format **is not** in the list → convert to the **first** format in the list (the "preferred" target).
+
+Conversion is skipped entirely (pure pass-through) when: the switch is off, the list is empty, the inbound path is not a conversion-eligible endpoint (e.g. `/v1/models`), or the inbound format is already supported upstream.
+
+### Configuration examples
+
+**Upstream supports only OpenAI Chat** — `Upstream Formats = ["openai-chat"]`:
+
+| Client sends | What happens |
+|---|---|
+| OpenAI Chat (`/v1/chat/completions`) | Inbound chat is in the list → **passthrough** to `/v1/chat/completions`, Bearer auth |
+| OpenAI Responses (`/v1/responses`) | Not in list → **converted** to chat → forwarded to `/v1/chat/completions`; response converted back to Responses |
+| Anthropic (`/v1/messages`) | Not in list → **converted** to chat → forwarded to `/v1/chat/completions`; response converted back to Anthropic |
+| Gemini (`:generateContent`) | Not in list → **converted** to chat → forwarded to `/v1/chat/completions`; response converted back to Gemini |
+
+→ No matter which format the client uses, the upstream always receives OpenAI Chat.
+
+**Upstream supports Chat and Responses** — `Upstream Formats = ["openai-chat", "openai-response"]`:
+
+| Client sends | What happens |
+|---|---|
+| OpenAI Chat | In the list → **passthrough** `/v1/chat/completions` |
+| OpenAI Responses | In the list → **passthrough** `/v1/responses` |
+| Anthropic | Not in list → converted to the **first** listed format (chat) → `/v1/chat/completions` |
+| Gemini | Not in list → converted to the **first** listed format (chat) → `/v1/chat/completions` |
+
+> **List order matters**: the "preferred" target is always the **first** item. To make Anthropic-in convert *to Responses*, put responses first: `["openai-response", "openai-chat"]`. (A chat client still passes through, since chat remains in the list.)
+
+### Supported conversion coverage
+
+- **Formats**: OpenAI Chat, OpenAI Responses, Anthropic Messages, Gemini — any-to-any, both directions.
+- **Tool calls**: tool definitions (`function.parameters` ↔ `input_schema` ↔ `functionDeclarations` ↔ Responses flat schema), tool calls (`tool_calls` ↔ `tool_use` ↔ `functionCall` ↔ `function_call`), and tool results (`role:"tool"` ↔ `tool_result` ↔ `functionResponse` ↔ `function_call_output`).
+- **Images**: `image_url` (URL or `data:` URI) ↔ Anthropic `image` source (base64/URL) ↔ Gemini `inline_data` (base64) ↔ Responses `input_image`.
+
+### Notes & limitations
+
+- **Conversion OFF** = pure pass-through regardless of the format list (identical to the original behavior; no request/response is parsed or rewritten).
+- **Streaming tool calls** are translated per-format (Anthropic `input_json_delta`, OpenAI `tool_calls[].function.arguments` deltas, Responses `function_call_arguments.delta`, Gemini whole-call).
+- **Gemini image URLs**: Gemini's `inline_data` requires base64. A plain `http(s)` URL image (not a `data:` URI) is **rejected with HTTP 400** rather than fetched — provide base64 or a `data:` URI.
+- **Gemini has no call IDs**: tool-call IDs are synthesized (`name#index`) when parsing Gemini.
+- Error responses in conversion mode are currently passed through as-is (the upstream error body is not yet translated to the inbound format's error shape).
+- `param_overrides` are not applied in conversion mode (they target OpenAI-body keys; their semantics differ across formats).
+- When conversion is ON, keep the group's **Channel Type** matching the primary upstream format (used for native-format key validation).
 
 ## Related Projects
 

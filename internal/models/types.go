@@ -98,6 +98,14 @@ type Group struct {
 	ValidationEndpoint  string               `gorm:"type:varchar(255)" json:"validation_endpoint"`
 	ChannelType         string               `gorm:"type:varchar(50);not null" json:"channel_type"`
 	Sort                int                  `gorm:"default:0" json:"sort"`
+	// ProtocolConversion enables group-level protocol conversion: the inbound
+	// (OpenAI Chat) request is translated to a target upstream format chosen
+	// from UpstreamFormats. When false, the proxy behaves as a pure passthrough.
+	ProtocolConversion bool `gorm:"default:false" json:"protocol_conversion"`
+	// UpstreamFormats is the list of upstream format ids the channel supports
+	// (e.g. ["anthropic","openai-chat"]). Used only when ProtocolConversion is
+	// true. Empty means no conversion target (falls back to passthrough).
+	UpstreamFormats datatypes.JSON `gorm:"type:json" json:"upstream_formats"`
 	TestModel           string               `gorm:"type:varchar(255);not null" json:"test_model"`
 	ParamOverrides      datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
 	Config              datatypes.JSONMap    `gorm:"type:json" json:"config"`
@@ -115,6 +123,7 @@ type Group struct {
 	HeaderRuleList            []HeaderRule               `gorm:"-" json:"-"`
 	ModelRedirectMap          map[string]string          `gorm:"-" json:"-"`
 	FailoverStatusCodeMatcher failover.StatusCodeMatcher `gorm:"-" json:"-"`
+	UpstreamFormatList        []string                   `gorm:"-" json:"-"`
 }
 
 // APIKey 对应 api_keys 表

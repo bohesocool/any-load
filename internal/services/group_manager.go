@@ -94,6 +94,15 @@ func (gm *GroupManager) Initialize() error {
 				g.HeaderRuleList = []models.HeaderRule{}
 			}
 
+			// Parse upstream format list for protocol conversion
+			g.UpstreamFormatList = []string{}
+			if len(g.UpstreamFormats) > 0 {
+				if err := json.Unmarshal(g.UpstreamFormats, &g.UpstreamFormatList); err != nil {
+					logrus.WithError(err).WithField("group_name", g.Name).Warn("Failed to parse upstream_formats for group")
+					g.UpstreamFormatList = []string{}
+				}
+			}
+
 			// Parse model redirect rules with error handling
 			g.ModelRedirectMap = make(map[string]string)
 			if len(group.ModelRedirectRules) > 0 {

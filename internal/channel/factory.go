@@ -152,5 +152,7 @@ func (f *Factory) newBaseChannel(name string, group *models.Group) (*BaseChannel
 		effectiveConfig:     &group.EffectiveConfig,
 		modelRedirectRules:  group.ModelRedirectRules,
 		modelRedirectStrict: group.ModelRedirectStrict,
+		protocolConversion:  group.ProtocolConversion,
+		upstreamFormats:     group.UpstreamFormats,
 	}, nil
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"any-load/internal/affinity"
@@ -18,6 +19,7 @@ import (
 	app_errors "any-load/internal/errors"
 	"any-load/internal/keypool"
 	"any-load/internal/models"
+	"any-load/internal/protocol"
 	"any-load/internal/response"
 	"any-load/internal/services"
 	"any-load/internal/utils"
@@ -156,9 +158,69 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	isStream := channelHandler.IsStreamRequest(c, bodyBytes)
+	// Resolve protocol conversion mode. The inbound format is detected from
+	// the request path; if it is already supported by the upstream (smart
+	// passthrough) or conversion is disabled, the request takes the normal
+	// passthrough path unchanged.
+	conv, convErr := ps.resolveConversion(c, group)
+	if convErr != nil {
+		response.Error(c, convErr)
+		return
+	}
 
-	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0, affCtx)
+	var isStream bool
+	if conv != nil {
+		// Stream intent is format-specific: chat/anthropic use the body `stream`
+		// field; gemini uses the path suffix :streamGenerateContent.
+		isStream = conv.inHandler.IsInboundStream(c.Request.URL.Path, bodyBytes)
+	} else {
+		isStream = channelHandler.IsStreamRequest(c, bodyBytes)
+	}
+
+	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0, affCtx, conv)
+}
+
+// convCtx carries the conversion handlers resolved for a request. A nil
+// convCtx means passthrough (no conversion). Inbound handler parses the
+// client's format; upstream handler emits/speaks the target format.
+type convCtx struct {
+	inHandler protocol.FormatHandler
+	upHandler protocol.FormatHandler
+}
+
+// resolveConversion determines whether this request should run through the
+// protocol-conversion path. Returns a non-nil convCtx when conversion applies,
+// nil when passthrough (disabled, unknown inbound format, no target, or the
+// inbound format is already an upstream-supported format → smart passthrough).
+func (ps *ProxyServer) resolveConversion(c *gin.Context, group *models.Group) (*convCtx, *app_errors.APIError) {
+	if !group.ProtocolConversion {
+		return nil, nil
+	}
+	if c.Request.Method != http.MethodPost {
+		return nil, nil
+	}
+	inboundFormat := protocol.DetectInboundFormat(c.Request.URL.Path)
+	if inboundFormat == "" {
+		return nil, nil
+	}
+	targetFormat := protocol.PickTarget(group.UpstreamFormatList, inboundFormat)
+	if targetFormat == "" || targetFormat == inboundFormat {
+		// No upstream formats configured, or the inbound format is already
+		// supported upstream → passthrough.
+		return nil, nil
+	}
+	inHandler, ok := protocol.GetHandler(inboundFormat)
+	if !ok {
+		// Inbound format detected but no handler (e.g. gemini in Phase A):
+		// fall back to passthrough rather than failing.
+		return nil, nil
+	}
+	upHandler, ok := protocol.GetHandler(targetFormat)
+	if !ok {
+		return nil, app_errors.NewAPIError(app_errors.ErrInternalServer,
+			fmt.Sprintf("protocol conversion target %q is not supported", targetFormat))
+	}
+	return &convCtx{inHandler: inHandler, upHandler: upHandler}, nil
 }
 
 // resolveAffinity derives the affinity key for the request and, if affinity is
@@ -221,11 +283,48 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	startTime time.Time,
 	retryCount int,
 	affCtx *affinityCtx,
+	conv *convCtx,
 ) {
 	cfg := group.EffectiveConfig
 	maxConc := cfg.MaxConcurrencyPerKey
 
-	apiKey, upstreamURL, err := ps.selectUpstreamAndKey(c, channelHandler, originalGroup, group, retryCount, affCtx)
+	// Build the source URL (for upstream selection) and the request body.
+	// In conversion mode the inbound body is parsed to the chat IR, the model
+	// is redirected, and the IR is emitted in the target upstream format with
+	// the target's native path. In passthrough mode both are the inbound
+	// values unchanged.
+	var reqBody []byte
+	srcURL := c.Request.URL
+	if conv != nil {
+		ir, err := conv.inHandler.ParseInboundRequest(c.Request.URL.Path, bodyBytes)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			return
+		}
+		// Apply model redirect on the IR model.
+		if redirected, rerr := channel.RedirectModel(ir.Model, group); rerr != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, rerr.Error()))
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, rerr, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			return
+		} else {
+			ir.Model = redirected
+		}
+		ir.Stream = isStream
+
+		path, rawQuery := conv.upHandler.UpstreamPath(ir.Model, isStream)
+		srcURL = &url.URL{Path: path, RawQuery: rawQuery}
+		reqBody, err = conv.upHandler.EmitUpstreamRequest(ir)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			return
+		}
+	} else {
+		reqBody = bodyBytes
+	}
+
+	apiKey, upstreamURL, err := ps.selectUpstreamAndKey(c, channelHandler, srcURL, originalGroup, group, retryCount, affCtx)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
@@ -246,13 +345,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, c.Request.Method, upstreamURL, bytes.NewReader(reqBody))
 	if err != nil {
 		logrus.Errorf("Failed to create upstream request: %v", err)
 		response.Error(c, app_errors.ErrInternalServer)
 		return
 	}
-	req.ContentLength = int64(len(bodyBytes))
+	req.ContentLength = int64(len(reqBody))
 
 	req.Header = c.Request.Header.Clone()
 
@@ -261,21 +360,26 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
 
-	// Apply model redirection
-	finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
-		return
-	}
+	if conv != nil {
+		// Target-native auth (e.g. x-api-key for Anthropic, ?key= for Gemini).
+		conv.upHandler.ApplyAuth(req, apiKey)
+	} else {
+		// Apply model redirection
+		finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
+		if err != nil {
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+			return
+		}
 
-	// Update request body if it was modified by redirection
-	if !bytes.Equal(finalBodyBytes, bodyBytes) {
-		req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
-		req.ContentLength = int64(len(finalBodyBytes))
-	}
+		// Update request body if it was modified by redirection
+		if !bytes.Equal(finalBodyBytes, bodyBytes) {
+			req.Body = io.NopCloser(bytes.NewReader(finalBodyBytes))
+			req.ContentLength = int64(len(finalBodyBytes))
+		}
 
-	channelHandler.ModifyRequest(req, apiKey, group)
+		channelHandler.ModifyRequest(req, apiKey, group)
+	}
 
 	// Apply custom header rules
 	if len(group.HeaderRuleList) > 0 {
@@ -358,15 +462,20 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, affCtx)
+		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, affCtx, conv)
 		return
 	}
 
 	// ps.keyProvider.UpdateStatus(apiKey, group, true) // 请求成功不再重置成功次数，减少IO消耗
 	logrus.Debugf("Request for group %s succeeded on attempt %d with key %s", group.Name, retryCount+1, utils.MaskAPIKey(apiKey.KeyValue))
 
-	// Check if this is a model list request (needs special handling)
-	if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+	// In conversion mode, translate the upstream response back to the client's
+	// inbound format. Otherwise (passthrough, or smart-passthrough target)
+	// forward the response as-is.
+	if conv != nil {
+		ps.dispatchConversionResponse(c, resp, conv, isStream)
+	} else if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+		// Check if this is a model list request (needs special handling)
 		ps.handleModelListResponse(c, resp, group, channelHandler)
 	} else {
 		for key, values := range resp.Header {
@@ -402,6 +511,7 @@ func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 func (ps *ProxyServer) selectUpstreamAndKey(
 	c *gin.Context,
 	ch channel.ChannelProxy,
+	srcURL *url.URL,
 	originalGroup *models.Group,
 	group *models.Group,
 	retryCount int,
@@ -417,7 +527,7 @@ func (ps *ProxyServer) selectUpstreamAndKey(
 		}
 		if apiKey.ID == affCtx.bound.KeyID {
 			// Got the bound key: replay its upstream by index.
-			upstreamURL, buildErr := ch.BuildUpstreamURLAt(c.Request.URL, originalGroup.Name, affCtx.bound.UpstreamIdx)
+			upstreamURL, buildErr := ch.BuildUpstreamURLAt(srcURL, originalGroup.Name, affCtx.bound.UpstreamIdx)
 			if buildErr == nil {
 				ps.storeAffinityBinding(affCtx, ch, originalGroup, group, apiKey, affCtx.bound.UpstreamIdx)
 				return apiKey, upstreamURL, nil
@@ -429,7 +539,7 @@ func (ps *ProxyServer) selectUpstreamAndKey(
 			// Bound key is at concurrency capacity (it was confirmed active in
 			// HandleProxy): keep the existing binding so the next request retries
 			// it, and just use the rotated key for this request.
-			upstreamURL, _, buildErr := ch.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
+			upstreamURL, _, buildErr := ch.BuildUpstreamURL(srcURL, originalGroup.Name)
 			if buildErr != nil {
 				ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
 				return nil, "", buildErr
@@ -443,7 +553,7 @@ func (ps *ProxyServer) selectUpstreamAndKey(
 	if err != nil {
 		return nil, "", err
 	}
-	upstreamURL, upstreamIdx, err := ch.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
+	upstreamURL, upstreamIdx, err := ch.BuildUpstreamURL(srcURL, originalGroup.Name)
 	if err != nil {
 		ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
 		return nil, "", err

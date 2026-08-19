@@ -40,6 +40,8 @@ type BaseChannel struct {
 	effectiveConfig     *types.SystemSettings
 	modelRedirectRules  datatypes.JSONMap
 	modelRedirectStrict bool
+	protocolConversion  bool
+	upstreamFormats     datatypes.JSON
 }
 
 // getUpstreamURL selects an upstream URL using a smooth weighted round-robin
@@ -160,6 +162,12 @@ func (b *BaseChannel) IsConfigStale(group *models.Group) bool {
 		return true
 	}
 	if b.modelRedirectStrict != group.ModelRedirectStrict {
+		return true
+	}
+	if b.protocolConversion != group.ProtocolConversion {
+		return true
+	}
+	if !bytes.Equal(b.upstreamFormats, group.UpstreamFormats) {
 		return true
 	}
 	return false

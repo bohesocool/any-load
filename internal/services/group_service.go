@@ -17,6 +17,7 @@ import (
 	"any-load/internal/encryption"
 	app_errors "any-load/internal/errors"
 	"any-load/internal/models"
+	"any-load/internal/protocol"
 	"any-load/internal/utils"
 
 	"github.com/sirupsen/logrus"
@@ -101,6 +102,8 @@ type GroupCreateParams struct {
 	HeaderRules         []models.HeaderRule
 	ProxyKeys           string
 	SubGroups           []SubGroupInput
+	ProtocolConversion  bool
+	UpstreamFormats     []string
 }
 
 // GroupUpdateParams captures updatable fields for a group.
@@ -123,6 +126,9 @@ type GroupUpdateParams struct {
 	HeaderRules         *[]models.HeaderRule
 	ProxyKeys           *string
 	SubGroups           *[]SubGroupInput
+	ProtocolConversion  *bool
+	HasUpstreamFormats  bool
+	UpstreamFormats     []string
 }
 
 // GroupReorderItem captures a group ID and target sort value.
@@ -213,6 +219,11 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		return nil, err
 	}
 
+	cleanedUpstreamFormats, err := validateUpstreamFormats(params.UpstreamFormats, params.ProtocolConversion)
+	if err != nil {
+		return nil, err
+	}
+
 	headerRulesJSON, err := s.normalizeHeaderRules(params.HeaderRules)
 	if err != nil {
 		return nil, err
@@ -247,6 +258,8 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		Config:              cleanedConfig,
 		HeaderRules:         headerRulesJSON,
 		ProxyKeys:           strings.TrimSpace(params.ProxyKeys),
+		ProtocolConversion: params.ProtocolConversion,
+		UpstreamFormats:     cleanedUpstreamFormats,
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -418,6 +431,24 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_channel_type", map[string]any{"types": supported})
 		}
 		group.ChannelType = cleanedChannelType
+	}
+
+	// Protocol conversion settings. ProtocolConversion defaults to false when
+	// not provided; UpstreamFormats is only applied when explicitly provided
+	// (HasUpstreamFormats), allowing it to be cleared by sending an empty list.
+	newProtocolConversion := group.ProtocolConversion
+	if params.ProtocolConversion != nil {
+		newProtocolConversion = *params.ProtocolConversion
+	}
+	if params.HasUpstreamFormats {
+		cleaned, err := validateUpstreamFormats(params.UpstreamFormats, newProtocolConversion)
+		if err != nil {
+			return nil, err
+		}
+		group.UpstreamFormats = cleaned
+	}
+	if params.ProtocolConversion != nil {
+		group.ProtocolConversion = *params.ProtocolConversion
 	}
 
 	if params.Sort != nil {
@@ -1049,6 +1080,39 @@ func (s *GroupService) isValidChannelType(channelType string) bool {
 		}
 	}
 	return false
+}
+
+// validateUpstreamFormats validates a group's upstream format list for protocol
+// conversion: each entry must be a registered protocol format id, with no
+// duplicates. When protocolConversion is enabled, the list must be non-empty.
+// Returns the JSON-encoded list (or nil when empty) for storage.
+func validateUpstreamFormats(formats []string, protocolConversion bool) (datatypes.JSON, error) {
+	if len(formats) == 0 {
+		if protocolConversion {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.upstream_formats_required", nil)
+		}
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, len(formats))
+	for _, f := range formats {
+		if !protocol.IsValidFormat(f) {
+			supported := strings.Join(protocol.SupportedFormats(), ", ")
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_upstream_format",
+				map[string]any{"format": f, "types": supported})
+		}
+		if _, exists := seen[f]; exists {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.duplicate_upstream_format",
+				map[string]any{"format": f})
+		}
+		seen[f] = struct{}{}
+	}
+
+	b, err := json.Marshal(formats)
+	if err != nil {
+		return nil, app_errors.ErrValidation
+	}
+	return datatypes.JSON(b), nil
 }
 
 // convertToJSONMap converts a map[string]string to datatypes.JSONMap

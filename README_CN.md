@@ -16,13 +16,14 @@ Any-Load 是一个处于早期的二开分支。在上游已有能力之外：
 
 - **渠道亲和性 / 粘性路由** ✅ —— 将共享同一特征（会话请求头、body 中的 `session_id` / `prompt_cache_key` / 对话 ID，或首条消息哈希）的请求固定到同一（上游 + 密钥）组合，而非纯轮询——对依赖会话状态的上游、以及平滑限流行为有帮助。支持全局与分组级配置、绑定带 TTL、绑定密钥不可用时自动故障转移。
 - **每密钥并发限制** ✅ —— 限制分组内每把密钥的并发在途请求数（分组级覆盖全局设置）；超限的密钥被跳过，轮询落到其它可用密钥。
-- **协议转换**：在代理层完成各厂商原生 API 格式之间的互转（OpenAI ↔ Anthropic ↔ Gemini），让客户端只需对接一个统一入口，无需关心上游的原生协议。*（规划中、尚未实现）*
+- **协议转换** ✅ —— 在代理层完成各厂商原生 API 格式（OpenAI Chat / OpenAI Responses / Anthropic / Gemini）之间的互转，双向、流式与非流式均支持，含工具调用与图片。客户端用任意格式调用，代理按上游支持的格式转换。详见 [协议转换](#协议转换)。
 
 透明透传 + 上游与密钥的加权轮询；渠道亲和性与每密钥并发均为可选，默认关闭。
 
 ## 功能特性
 
 - **透明代理**: 完全保留原生 API 格式，支持 OpenAI、Google Gemini 和 Anthropic Claude 等多种格式
+- **协议转换**: 可选的分组级转换，在任意支持的 API 格式（OpenAI Chat / Responses / Anthropic / Gemini）之间互转——双向、流式+非流式，含工具调用与图片
 - **智能密钥管理**: 高性能密钥池，支持分组管理、自动轮换和故障恢复
 - **负载均衡**: 支持多上游端点的加权负载均衡，提升服务可用性
 - **智能故障处理**: 自动密钥黑名单管理和恢复机制，确保服务连续性
@@ -586,6 +587,75 @@ response = client.messages.create(
 > **重要提示**：作为透明代理服务，Any-Load 完全保留各 AI 服务的原生 API 格式和认证方式，仅需要替换端点地址并使用在管理端配置的**代理密钥**即可无缝迁移。
 
 </details>
+
+## 协议转换
+
+协议转换是一个**可选的、分组级**功能，在代理层把任意支持的 LLM API 格式互相转换。客户端可以用一种格式（如 Anthropic `/v1/messages`）调用，请求被转换成上游实际支持的格式（如 OpenAI `/v1/chat/completions`），响应再转换回客户端的格式。这与 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的行为一致。
+
+转换是**双向**的（任意入站 → 任意上游），**流式与非流式**响应都支持，并包含**工具调用**（定义、调用、结果）与**图片**。
+
+### 两个分组设置
+
+| 设置 | 取值 | 作用 |
+|---|---|---|
+| **协议转换**（开关） | 开 / 关 | 关 = 纯透传，行为与以前完全一致 |
+| **上游格式**（多选） | `openai-chat` / `openai-response` / `anthropic` / `gemini` | 声明**上游能接受哪些格式** |
+
+入站（客户端）格式由**请求路径自动识别**，无需客户端声明：
+
+| 请求路径 | 入站格式 |
+|---|---|
+| `/v1/chat/completions` | `openai-chat` |
+| `/v1/responses` | `openai-response` |
+| `/v1/messages` | `anthropic` |
+| `/v1beta/models/<model>:generateContent` / `:streamGenerateContent` | `gemini` |
+
+### 目标如何选择（转换开关开启时）
+
+1. 入站格式**在上游格式列表里** → **直接透传**，不转换（智能透传）。
+2. 入站格式**不在列表里** → 转换为列表里**第一个**格式（"首选"目标）。
+
+以下情况完全不转换（纯透传）：开关关闭、列表为空、入站路径不是转换适用的端点（如 `/v1/models`）、入站格式上游已支持。
+
+### 配置示例
+
+**上游只支持 OpenAI Chat** —— `上游格式 = ["openai-chat"]`：
+
+| 客户端发的 | 实际发生 |
+|---|---|
+| OpenAI Chat（`/v1/chat/completions`） | 入站 chat 在列表里 → **透传**到 `/v1/chat/completions`，Bearer 鉴权 |
+| OpenAI Responses（`/v1/responses`） | 不在列表 → **转换**为 chat → 转发到 `/v1/chat/completions`；响应转回 Responses |
+| Anthropic（`/v1/messages`） | 不在列表 → **转换**为 chat → 转发到 `/v1/chat/completions`；响应转回 Anthropic |
+| Gemini（`:generateContent`） | 不在列表 → **转换**为 chat → 转发到 `/v1/chat/completions`；响应转回 Gemini |
+
+→ 无论客户端用哪种格式，上游永远收到 OpenAI Chat。
+
+**上游同时支持 Chat 和 Responses** —— `上游格式 = ["openai-chat", "openai-response"]`：
+
+| 客户端发的 | 实际发生 |
+|---|---|
+| OpenAI Chat | 在列表里 → **透传** `/v1/chat/completions` |
+| OpenAI Responses | 在列表里 → **透传** `/v1/responses` |
+| Anthropic | 不在列表 → 转换为**列表第一个**格式（chat）→ `/v1/chat/completions` |
+| Gemini | 不在列表 → 转换为**列表第一个**格式（chat）→ `/v1/chat/completions` |
+
+> **列表顺序很关键**：首选目标永远是**第一项**。若想让 Anthropic 入站转换*成 Responses*，把 responses 放第一：`["openai-response", "openai-chat"]`。（此时 chat 客户端仍在列表里，仍透传。）
+
+### 支持的转换范围
+
+- **格式**：OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini —— 任意两两互转，双向。
+- **工具调用**：工具定义（`function.parameters` ↔ `input_schema` ↔ `functionDeclarations` ↔ Responses 扁平 schema）、工具调用（`tool_calls` ↔ `tool_use` ↔ `functionCall` ↔ `function_call`）、工具结果（`role:"tool"` ↔ `tool_result` ↔ `functionResponse` ↔ `function_call_output`）。
+- **图片**：`image_url`（URL 或 `data:` URI）↔ Anthropic `image` source（base64/URL）↔ Gemini `inline_data`（base64）↔ Responses `input_image`。
+
+### 注意事项与限制
+
+- **转换关闭** = 纯透传，与上游格式列表无关（与原始行为一致，不解析也不改写请求/响应）。
+- **流式工具调用**按各格式事件类型翻译（Anthropic `input_json_delta`、OpenAI `tool_calls[].function.arguments` delta、Responses `function_call_arguments.delta`、Gemini 整块）。
+- **Gemini 图片 URL**：Gemini 的 `inline_data` 需要 base64。纯 `http(s)` URL 图片（非 `data:` URI）会**返回 400 拒绝**，代理不抓取——请提供 base64 或 `data:` URI。
+- **Gemini 无 call id**：解析 Gemini 时工具调用 id 合成为 `name#index`。
+- 转换模式下错误响应目前原样透传（尚未翻译为入站格式的错误形状）。
+- `param_overrides` 在转换模式下不应用（它面向 OpenAI body 字段，跨格式语义不一）。
+- 转换开启时，建议分组**渠道类型**与上游主格式一致（用于原生格式的密钥校验）。
 
 ## 相关项目
 
