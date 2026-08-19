@@ -1,0 +1,118 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact: any-load-linux-amd64
+          - target: linux-arm64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            artifact: any-load-linux-arm64
+            cgo: "0"
+          # macOS
+          - target: macos-amd64
+            runner: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact: any-load-macos-amd64
+            cgo: "0"
+          - target: macos-arm64
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact: any-load-macos-arm64
+            cgo: "0"
+          # Windows
+          - target: windows-amd64
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact: any-load-windows-amd64.exe
+    env:
+      CGO_ENABLED: ${{ matrix.cgo || '' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+          cache-dependency-path: "web/package-lock.json"
+
+      - name: Build Frontend
+        run: npm ci && VITE_VERSION=${{ github.ref_name }} npm run build
+        working-directory: ./web
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build Backend
+        run: |
+          go mod download
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build \
+            -ldflags "-s -w -X any-load/internal/version.Version=${{ github.ref_name }}" \
+            -o ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          draft: false
+          generate_release_notes: true
+          name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
