@@ -174,10 +174,19 @@ var MessagesJaJP = map[string]string{
 	"config.key_validation_timeout":          "キー検証タイムアウト（秒）",
 	"config.key_validation_timeout_desc":     "バックグラウンドで単一キーを検証する際のAPIリクエストタイムアウト（秒）。",
 
+	// Routing config related
+	"config.channel_affinity":             "チャネルアフィニティ",
+	"config.channel_affinity_desc":        "有効にすると、同じセッションのリクエストは同じ上流エンドポイントとキーの組み合わせに安定してルーティングされます（上流のセッション状態とキャッシュに有利）。アフィニティキーは優先度順に取得されます：セッションヘッダー → body内の session/prompt_cache_key/会話ID → 最初のメッセージハッシュ。グループで個別に上書き可能。",
+	"config.channel_affinity_ttl":          "アフィニティバインディングTTL（秒）",
+	"config.channel_affinity_ttl_desc":     "チャネルアフィニティバインディングの存続時間（秒）。期限切れ後に再選択されます。0は期限切れなし。",
+	"config.max_concurrency_per_key":       "キーごとの最大並行数",
+	"config.max_concurrency_per_key_desc":  "グループ内の各キーの最大同時実行リクエスト数。制限を超えるキーはスキップされ、他のキーにローテーションされます。0は無制限。グループで個別に上書き可能。",
+
 	// Category labels
 	"config.category.basic":   "基本設定",
 	"config.category.request": "リクエスト設定",
 	"config.category.key":     "キー設定",
+	"config.category.routing": "ルーティング",
 
 	// Internal error messages (for fmt.Errorf usage)
 	"error.upstreams_required":       "upstreamsフィールドは必須です",

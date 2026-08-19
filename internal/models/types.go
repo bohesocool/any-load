@@ -40,6 +40,11 @@ type GroupConfig struct {
 	KeyValidationConcurrency     *int    `json:"key_validation_concurrency,omitempty"`
 	KeyValidationTimeoutSeconds  *int    `json:"key_validation_timeout_seconds,omitempty"`
 	EnableRequestBodyLogging     *bool   `json:"enable_request_body_logging,omitempty"`
+
+	// 路由策略（nil 表示继承全局）
+	ChannelAffinity      *bool `json:"channel_affinity,omitempty"`
+	ChannelAffinityTTL   *int  `json:"channel_affinity_ttl,omitempty"`
+	MaxConcurrencyPerKey *int  `json:"max_concurrency_per_key,omitempty"`
 }
 
 // HeaderRule defines a single rule for header manipulation.

@@ -75,7 +75,7 @@ func (ch *AnthropicChannel) ExtractModel(c *gin.Context, bodyBytes []byte) strin
 
 // ValidateKey checks if the given API key is valid by making a messages request.
 func (ch *AnthropicChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
+	upstreamURL, _ := ch.getUpstreamURL()
 	if upstreamURL == nil {
 		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
 	}

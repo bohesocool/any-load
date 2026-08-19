@@ -71,7 +71,7 @@ func (ch *OpenAIResponseChannel) ExtractModel(c *gin.Context, bodyBytes []byte) 
 }
 
 func (ch *OpenAIResponseChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
+	upstreamURL, _ := ch.getUpstreamURL()
 	if upstreamURL == nil {
 		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
 	}

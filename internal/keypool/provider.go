@@ -52,16 +52,34 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 		return nil, fmt.Errorf("failed to parse key ID '%s': %w", keyIDStr, err)
 	}
 
-	// 2. Get key details from HASH
+	// 2. Load key details from its HASH (shared with GetKeyByID).
+	apiKey, err := p.getKeyFromStore(keyID)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey == nil {
+		// The rotated key ID is no longer in the store (removed concurrently).
+		return nil, app_errors.ErrNoActiveKeys
+	}
+	return apiKey, nil
+}
+
+// getKeyFromStore reads a key's details from the store HASH and decrypts its
+// value. Shared by SelectKey (post-rotation) and GetKeyByID (affinity replay).
+func (p *KeyProvider) getKeyFromStore(keyID uint64) (*models.APIKey, error) {
 	keyHashKey := fmt.Sprintf("key:%d", keyID)
 	keyDetails, err := p.store.HGetAll(keyHashKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get key details for key ID %d: %w", keyID, err)
 	}
+	if len(keyDetails) == 0 {
+		// key hash absent (e.g. removed) — treat as not found
+		return nil, nil
+	}
 
-	// 3. Manually unmarshal the map into an APIKey struct
 	failureCount, _ := strconv.ParseInt(keyDetails["failure_count"], 10, 64)
 	createdAt, _ := strconv.ParseInt(keyDetails["created_at"], 10, 64)
+	groupID, _ := strconv.ParseUint(keyDetails["group_id"], 10, 64)
 
 	// Decrypt the key value for use by channels
 	encryptedKeyValue := keyDetails["key_string"]
@@ -75,16 +93,141 @@ func (p *KeyProvider) SelectKey(groupID uint) (*models.APIKey, error) {
 		decryptedKeyValue = encryptedKeyValue
 	}
 
-	apiKey := &models.APIKey{
+	return &models.APIKey{
 		ID:           uint(keyID),
 		KeyValue:     decryptedKeyValue,
 		Status:       keyDetails["status"],
 		FailureCount: failureCount,
-		GroupID:      groupID,
+		GroupID:      uint(groupID),
 		CreatedAt:    time.Unix(createdAt, 0),
+	}, nil
+}
+
+// GetKeyByID fetches a specific key by ID without rotating the active-key list.
+// Used by channel affinity to replay a bound key. Returns nil if the key is not
+// found or is no longer active (binding should be invalidated in that case).
+func (p *KeyProvider) GetKeyByID(keyID uint) (*models.APIKey, error) {
+	apiKey, err := p.getKeyFromStore(uint64(keyID))
+	if err != nil {
+		return nil, err
+	}
+	if apiKey == nil || apiKey.Status != models.KeyStatusActive {
+		return nil, nil
+	}
+	return apiKey, nil
+}
+
+// inflightHashKey is the per-group HASH storing each key's in-flight request
+// counter for concurrency limiting. Field = key ID, value = count.
+func inflightHashKey(groupID uint) string {
+	return fmt.Sprintf("group:%d:inflight", groupID)
+}
+
+// AcquireKey increments the in-flight counter for a key and enforces the
+// per-key concurrency limit. Returns true if the slot was acquired, false if
+// the key is at capacity. When maxConc <= 0 (unlimited) it is a zero-cost
+// no-op that touches the store and returns true immediately.
+//
+// Note: a process crash between AcquireKey and the matching ReleaseKey leaks
+// one in-flight slot for this key until manually reset or (MemoryStore) a
+// restart. This is an accepted v1 trade-off.
+func (p *KeyProvider) AcquireKey(groupID, keyID uint, maxConc int) (bool, error) {
+	if maxConc <= 0 {
+		return true, nil
+	}
+	field := strconv.FormatUint(uint64(keyID), 10)
+	count, err := p.store.HIncrBy(inflightHashKey(groupID), field, 1)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire key %d: %w", keyID, err)
+	}
+	if count > int64(maxConc) {
+		// Over the limit: roll the increment back and report full.
+		if _, err := p.store.HIncrBy(inflightHashKey(groupID), field, -1); err != nil {
+			logrus.WithError(err).Errorf("failed to release over-limit slot for key %d", keyID)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// ReleaseKey decrements the in-flight counter for a key. It must be called once
+// for every successful AcquireKey once the request completes. When maxConc <= 0
+// it is a no-op (mirroring AcquireKey's no-op). Guards against negative counts.
+func (p *KeyProvider) ReleaseKey(groupID, keyID uint, maxConc int) {
+	if maxConc <= 0 {
+		return
+	}
+	field := strconv.FormatUint(uint64(keyID), 10)
+	count, err := p.store.HIncrBy(inflightHashKey(groupID), field, -1)
+	if err != nil {
+		logrus.WithError(err).Errorf("failed to release key %d", keyID)
+		return
+	}
+	if count < 0 {
+		// Self-heal a stray negative counter (e.g. a double release).
+		if err := p.store.HSet(inflightHashKey(groupID), map[string]any{field: 0}); err != nil {
+			logrus.WithError(err).Errorf("failed to reset negative inflight for key %d", keyID)
+		}
+	}
+}
+
+// SelectKeyWithConcurrency selects a key while respecting the per-key
+// concurrency limit (maxConc, 0 = unlimited). When preferredKeyID != 0 (a
+// channel-affinity hit) it first tries to acquire that bound key; if it is
+// unavailable or full it falls back to weighted rotation. During rotation it
+// skips keys at capacity, trying up to the number of active keys before
+// giving up with ErrNoActiveKeys.
+func (p *KeyProvider) SelectKeyWithConcurrency(groupID uint, maxConc int, preferredKeyID uint) (*models.APIKey, error) {
+	// Preferred (affinity-bound) key: try to acquire it directly without rotating.
+	if preferredKeyID != 0 {
+		apiKey, err := p.GetKeyByID(preferredKeyID)
+		if err != nil {
+			return nil, err
+		}
+		if apiKey != nil {
+			acquired, err := p.AcquireKey(groupID, apiKey.ID, maxConc)
+			if err != nil {
+				return nil, err
+			}
+			if acquired {
+				return apiKey, nil
+			}
+			// Bound key is at capacity: fall through to rotation.
+		}
+		// Bound key is gone/inactive: fall through to rotation (caller deletes binding).
 	}
 
-	return apiKey, nil
+	// Rotation: try each active key in turn until one is under its concurrency limit.
+	// Bound the number of attempts by the active-key list length so we can't loop
+	// forever; use LLen to size it.
+	activeKeysListKey := fmt.Sprintf("group:%d:active_keys", groupID)
+	activeCount, err := p.store.LLen(activeKeysListKey)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, fmt.Errorf("failed to count active keys: %w", err)
+	}
+	if activeCount == 0 {
+		return nil, app_errors.ErrNoActiveKeys
+	}
+
+	for i := int64(0); i < activeCount; i++ {
+		apiKey, err := p.SelectKey(groupID)
+		if err != nil {
+			if errors.Is(err, app_errors.ErrNoActiveKeys) {
+				return nil, err
+			}
+			return nil, err
+		}
+		acquired, err := p.AcquireKey(groupID, apiKey.ID, maxConc)
+		if err != nil {
+			return nil, err
+		}
+		if acquired {
+			return apiKey, nil
+		}
+		// Key at capacity: rotate to the next one.
+	}
+
+	return nil, app_errors.ErrNoActiveKeys
 }
 
 // UpdateStatus 异步地提交一个 Key 状态更新任务。

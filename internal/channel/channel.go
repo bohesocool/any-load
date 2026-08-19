@@ -11,8 +11,19 @@ import (
 
 // ChannelProxy defines the interface for different API channel proxies.
 type ChannelProxy interface {
-	// BuildUpstreamURL constructs the target URL for the upstream service.
-	BuildUpstreamURL(originalURL *url.URL, groupName string) (string, error)
+	// BuildUpstreamURL constructs the target URL for the upstream service via
+	// weighted round-robin, returning the chosen upstream index too (used by
+	// channel affinity to record the binding).
+	BuildUpstreamURL(originalURL *url.URL, groupName string) (string, int, error)
+
+	// BuildUpstreamURLAt constructs the target URL using the upstream at idx,
+	// replaying an affinity binding. Returns an error if idx is out of range.
+	BuildUpstreamURLAt(originalURL *url.URL, groupName string, idx int) (string, error)
+
+	// UpstreamBaseURL returns the base URL string of the upstream at idx, or
+	// "" if idx is out of range. Used to validate that a binding's upstream
+	// has not changed.
+	UpstreamBaseURL(idx int) string
 
 	// IsConfigStale checks if the channel's configuration is stale compared to the provided group.
 	IsConfigStale(group *models.Group) bool

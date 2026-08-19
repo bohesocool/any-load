@@ -174,10 +174,19 @@ var MessagesZhCN = map[string]string{
 	"config.key_validation_timeout":          "密钥验证超时（秒）",
 	"config.key_validation_timeout_desc":     "后台定时验证单个 Key 时的 API 请求超时时间（秒）。",
 
+	// Routing config related
+	"config.channel_affinity":             "渠道亲和性",
+	"config.channel_affinity_desc":        "开启后，同一会话的请求将稳定路由到相同的上游端点与密钥组合（利于上游会话状态与缓存）。亲和键按优先级取自：会话请求头 → body 中的 session/prompt_cache_key/对话 ID → 首条消息哈希。分组可单独覆盖此值。",
+	"config.channel_affinity_ttl":          "亲和绑定时长（秒）",
+	"config.channel_affinity_ttl_desc":     "渠道亲和绑定的存活时长（秒），过期后重新选择。0 表示不过期。",
+	"config.max_concurrency_per_key":       "每 Key 最大并发",
+	"config.max_concurrency_per_key_desc":  "每个分组内每把 Key 的最大并发请求数，超限的 Key 将被跳过并轮询到其它 Key。0 表示不限制。分组可单独覆盖此值。",
+
 	// Category labels
 	"config.category.basic":   "基础参数",
 	"config.category.request": "请求设置",
 	"config.category.key":     "密钥配置",
+	"config.category.routing": "路由策略",
 
 	// Internal error messages (for fmt.Errorf usage)
 	"error.upstreams_required":       "upstreams字段是必需的",

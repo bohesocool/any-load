@@ -12,12 +12,13 @@ Any-Load is a fork of [tbphp/gpt-load](https://github.com/tbphp/gpt-load) — a 
 
 ## Roadmap
 
-Any-Load is an early-stage fork. Beyond the upstream feature set, the following are **planned but not yet implemented**:
+Any-Load is an early-stage fork. Beyond the upstream feature set:
 
-- **Channel affinity / sticky routing**: bind requests that share a trait (e.g. API key, session, model) to a consistent upstream channel, instead of pure round-robin — useful for upstream session state and smoother rate-limit behavior.
-- **Protocol conversion**: translate between native LLM API formats (OpenAI ↔ Anthropic ↔ Gemini) at the proxy, so clients can call one unified endpoint regardless of the upstream's native protocol.
+- **Channel affinity / sticky routing** ✅ — bind requests that share a trait (session header, `session_id` / `prompt_cache_key` / conversation id in body, or first-message hash) to a consistent (upstream, key) pair instead of pure round-robin — useful for upstream session state and smoother rate-limit behavior. Configurable globally and per-group, with a TTL on bindings and automatic failover when a bound key is unavailable.
+- **Per-key concurrency limiting** ✅ — cap concurrent in-flight requests per key within a group (group-level override of the global setting); keys at capacity are skipped and rotation falls through to others.
+- **Protocol conversion**: translate between native LLM API formats (OpenAI ↔ Anthropic ↔ Gemini) at the proxy, so clients can call one unified endpoint regardless of the upstream's native protocol. *(planned, not yet implemented)*
 
-Current behavior is unchanged from upstream: transparent pass-through with weighted round-robin across upstreams and keys, **no affinity, no cross-protocol conversion**.
+Transparent pass-through with weighted round-robin across upstreams and keys; channel affinity and per-key concurrency are opt-in (disabled by default).
 
 ## Features
 

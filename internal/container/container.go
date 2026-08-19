@@ -3,6 +3,7 @@ package container
 
 import (
 	"any-load/internal/app"
+	"any-load/internal/affinity"
 	"any-load/internal/channel"
 	"any-load/internal/config"
 	"any-load/internal/db"
@@ -45,6 +46,9 @@ func BuildContainer() (*dig.Container, error) {
 		return nil, err
 	}
 	if err := container.Provide(channel.NewFactory); err != nil {
+		return nil, err
+	}
+	if err := container.Provide(affinity.NewManager); err != nil {
 		return nil, err
 	}
 

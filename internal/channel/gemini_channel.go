@@ -98,7 +98,7 @@ func (ch *GeminiChannel) ExtractModel(c *gin.Context, bodyBytes []byte) string {
 
 // ValidateKey checks if the given API key is valid by making a generateContent request.
 func (ch *GeminiChannel) ValidateKey(ctx context.Context, apiKey *models.APIKey, group *models.Group) (bool, error) {
-	upstreamURL := ch.getUpstreamURL()
+	upstreamURL, _ := ch.getUpstreamURL()
 	if upstreamURL == nil {
 		return false, fmt.Errorf("no upstream URL configured for channel %s", ch.Name)
 	}

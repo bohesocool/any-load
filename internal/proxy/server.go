@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"any-load/internal/affinity"
 	"any-load/internal/channel"
 	"any-load/internal/config"
 	"any-load/internal/encryption"
@@ -34,6 +35,7 @@ type ProxyServer struct {
 	channelFactory    *channel.Factory
 	requestLogService *services.RequestLogService
 	encryptionSvc     encryption.Service
+	affinityMgr       *affinity.Manager
 }
 
 // NewProxyServer creates a new proxy server
@@ -45,6 +47,7 @@ func NewProxyServer(
 	channelFactory *channel.Factory,
 	requestLogService *services.RequestLogService,
 	encryptionSvc encryption.Service,
+	affinityMgr *affinity.Manager,
 ) (*ProxyServer, error) {
 	return &ProxyServer{
 		keyProvider:       keyProvider,
@@ -54,7 +57,17 @@ func NewProxyServer(
 		channelFactory:    channelFactory,
 		requestLogService: requestLogService,
 		encryptionSvc:     encryptionSvc,
+		affinityMgr:       affinityMgr,
 	}, nil
+}
+
+// affinityCtx carries channel-affinity state from HandleProxy into the retry loop.
+type affinityCtx struct {
+	enabled      bool          // affinity enabled and a key was derived
+	affinityKey  string        // derived affinity key ("" when disabled)
+	entryGroupID uint          // the entry (original) group the binding is keyed under
+	ttl          time.Duration // binding TTL from effective config
+	bound        *affinity.Binding // resolved binding to replay on attempt 0 (nil = cold)
 }
 
 // HandleProxy is the main entry point for proxy requests, refactored based on the stable .bak logic.
@@ -68,32 +81,8 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	// Select sub-group if this is an aggregate group
-	subGroupName, err := ps.subGroupManager.SelectSubGroup(originalGroup)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"aggregate_group": originalGroup.Name,
-			"error":           err,
-		}).Error("Failed to select sub-group from aggregate")
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available sub-groups"))
-		return
-	}
-
-	group := originalGroup
-	if subGroupName != "" {
-		group, err = ps.groupManager.GetGroupByName(subGroupName)
-		if err != nil {
-			response.Error(c, app_errors.ParseDBError(err))
-			return
-		}
-	}
-
-	channelHandler, err := ps.channelFactory.GetChannel(group)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for group '%s': %v", groupName, err)))
-		return
-	}
-
+	// Read the body up front: it is needed both to derive the channel-affinity
+	// key (before sub-group selection) and downstream for param overrides.
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logrus.Errorf("Failed to read request body: %v", err)
@@ -101,6 +90,65 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 	c.Request.Body.Close()
+
+	// Channel affinity: derive the affinity key and try to replay an existing
+	// binding so the same session stays on the same (upstream, key) pair.
+	affCtx := ps.resolveAffinity(c, originalGroup, bodyBytes)
+
+	group := originalGroup
+	var channelHandler channel.ChannelProxy
+
+	if affCtx.bound != nil {
+		// Affinity hit: use the bound sub-group/channel directly. For standard
+		// groups the binding stores an empty SubGroup (i.e. the entry group).
+		boundName := affCtx.bound.SubGroup
+		if boundName == "" {
+			boundName = originalGroup.Name
+		}
+		boundGroup, err := ps.groupManager.GetGroupByName(boundName)
+		if err != nil {
+			// Bound sub-group no longer exists: invalidate and fall back to cold.
+			ps.affinityMgr.DeleteBinding(affCtx.entryGroupID, affCtx.affinityKey)
+			affCtx.bound = nil
+		} else {
+			group = boundGroup
+		}
+	}
+
+	if affCtx.bound == nil {
+		// Cold path: select sub-group (for aggregates) then resolve the group.
+		subGroupName, err := ps.subGroupManager.SelectSubGroup(originalGroup)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"aggregate_group": originalGroup.Name,
+				"error":           err,
+			}).Error("Failed to select sub-group from aggregate")
+			response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, "No available sub-groups"))
+			return
+		}
+		group = originalGroup
+		if subGroupName != "" {
+			group, err = ps.groupManager.GetGroupByName(subGroupName)
+			if err != nil {
+				response.Error(c, app_errors.ParseDBError(err))
+				return
+			}
+		}
+	}
+
+	channelHandler, err = ps.channelFactory.GetChannel(group)
+	if err != nil {
+		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to get channel for group '%s': %v", groupName, err)))
+		return
+	}
+
+	// Validate a bound affinity hit against the live channel (upstream must
+	// still exist at the bound index with the same base URL, and the bound key
+	// must still be active). On mismatch, drop the binding and go cold.
+	if affCtx.bound != nil && !ps.validateBoundBinding(affCtx, channelHandler) {
+		ps.affinityMgr.DeleteBinding(affCtx.entryGroupID, affCtx.affinityKey)
+		affCtx.bound = nil
+	}
 
 	finalBodyBytes, err := ps.applyParamOverrides(bodyBytes, group)
 	if err != nil {
@@ -110,7 +158,56 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 
 	isStream := channelHandler.IsStreamRequest(c, bodyBytes)
 
-	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0)
+	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0, affCtx)
+}
+
+// resolveAffinity derives the affinity key for the request and, if affinity is
+// enabled, attempts to load an existing binding. Returns a ctx with bound=nil
+// when affinity is disabled, no key could be derived, or no binding exists.
+func (ps *ProxyServer) resolveAffinity(c *gin.Context, originalGroup *models.Group, bodyBytes []byte) *affinityCtx {
+	ctx := &affinityCtx{entryGroupID: originalGroup.ID}
+
+	if !originalGroup.EffectiveConfig.ChannelAffinity {
+		return ctx
+	}
+
+	affinityKey := affinity.DeriveAffinityKey(c.Request.Header, bodyBytes)
+	if affinityKey == "" {
+		return ctx
+	}
+
+	ctx.enabled = true
+	ctx.affinityKey = affinityKey
+	if originalGroup.EffectiveConfig.ChannelAffinityTTL > 0 {
+		ctx.ttl = time.Duration(originalGroup.EffectiveConfig.ChannelAffinityTTL) * time.Second
+	} else {
+		ctx.ttl = 0 // no expiry
+	}
+
+	bound, err := ps.affinityMgr.GetBinding(originalGroup.ID, affinityKey)
+	if err != nil {
+		logrus.WithError(err).Warn("Failed to load affinity binding")
+		return ctx
+	}
+	ctx.bound = bound
+	return ctx
+}
+
+// validateBoundBinding checks that the bound (upstream, key) is still usable
+// against the live channel: the upstream index is in range and its base URL is
+// unchanged, and the bound key is still active.
+func (ps *ProxyServer) validateBoundBinding(ctx *affinityCtx, ch channel.ChannelProxy) bool {
+	if ctx.bound == nil {
+		return false
+	}
+	if base := ch.UpstreamBaseURL(ctx.bound.UpstreamIdx); base == "" || base != ctx.bound.BaseURL {
+		return false
+	}
+	key, err := ps.keyProvider.GetKeyByID(ctx.bound.KeyID)
+	if err != nil || key == nil {
+		return false
+	}
+	return true
 }
 
 // executeRequestWithRetry is the core recursive function for handling requests and retries.
@@ -123,22 +220,21 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	isStream bool,
 	startTime time.Time,
 	retryCount int,
+	affCtx *affinityCtx,
 ) {
 	cfg := group.EffectiveConfig
+	maxConc := cfg.MaxConcurrencyPerKey
 
-	apiKey, err := ps.keyProvider.SelectKey(group.ID)
+	apiKey, upstreamURL, err := ps.selectUpstreamAndKey(c, channelHandler, originalGroup, group, retryCount, affCtx)
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
 		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
 		return
 	}
-
-	upstreamURL, err := channelHandler.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
-	if err != nil {
-		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to build upstream URL: %v", err)))
-		return
-	}
+	// Release the per-key concurrency slot when this attempt fully completes
+	// (success, error, or after recursing into the next retry attempt).
+	defer ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -262,7 +358,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1)
+		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, affCtx)
 		return
 	}
 
@@ -295,6 +391,98 @@ func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 		return false
 	}
 	return group.FailoverStatusCodeMatcher.Match(statusCode)
+}
+
+// selectUpstreamAndKey picks an (upstream, key) pair for this attempt honoring
+// channel affinity (replay a binding on attempt 0) and per-key concurrency. It
+// acquires exactly one concurrency slot on success; the caller must ReleaseKey
+// it. Affinity bindings are (re)written here: renewed on a bound replay,
+// established on a first-attempt cold selection, and left untouched on retries
+// or when a still-active bound key is transiently at capacity.
+func (ps *ProxyServer) selectUpstreamAndKey(
+	c *gin.Context,
+	ch channel.ChannelProxy,
+	originalGroup *models.Group,
+	group *models.Group,
+	retryCount int,
+	affCtx *affinityCtx,
+) (*models.APIKey, string, error) {
+	maxConc := group.EffectiveConfig.MaxConcurrencyPerKey
+
+	// Affinity hit on the first attempt: prefer the bound key.
+	if retryCount == 0 && affCtx.bound != nil {
+		apiKey, err := ps.keyProvider.SelectKeyWithConcurrency(group.ID, maxConc, affCtx.bound.KeyID)
+		if err != nil {
+			return nil, "", err
+		}
+		if apiKey.ID == affCtx.bound.KeyID {
+			// Got the bound key: replay its upstream by index.
+			upstreamURL, buildErr := ch.BuildUpstreamURLAt(c.Request.URL, originalGroup.Name, affCtx.bound.UpstreamIdx)
+			if buildErr == nil {
+				ps.storeAffinityBinding(affCtx, ch, originalGroup, group, apiKey, affCtx.bound.UpstreamIdx)
+				return apiKey, upstreamURL, nil
+			}
+			// Bound upstream is stale (group upstreams changed): release and
+			// fall through to a fresh weighted selection below.
+			ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
+		} else {
+			// Bound key is at concurrency capacity (it was confirmed active in
+			// HandleProxy): keep the existing binding so the next request retries
+			// it, and just use the rotated key for this request.
+			upstreamURL, _, buildErr := ch.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
+			if buildErr != nil {
+				ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
+				return nil, "", buildErr
+			}
+			return apiKey, upstreamURL, nil
+		}
+	}
+
+	// Cold / retry selection.
+	apiKey, err := ps.keyProvider.SelectKeyWithConcurrency(group.ID, maxConc, 0)
+	if err != nil {
+		return nil, "", err
+	}
+	upstreamURL, upstreamIdx, err := ch.BuildUpstreamURL(c.Request.URL, originalGroup.Name)
+	if err != nil {
+		ps.keyProvider.ReleaseKey(group.ID, apiKey.ID, maxConc)
+		return nil, "", err
+	}
+
+	// Establish a binding only on the first attempt's cold selection so retry
+	// churn doesn't thrash the binding; a bound key that later gets blacklisted
+	// is dropped by validateBoundBinding on the next request.
+	if retryCount == 0 && affCtx.enabled {
+		ps.storeAffinityBinding(affCtx, ch, originalGroup, group, apiKey, upstreamIdx)
+	}
+	return apiKey, upstreamURL, nil
+}
+
+// storeAffinityBinding writes (or renews) the affinity binding for the selected
+// (key, upstream) pair. SubGroup is empty for standard groups (the binding is
+// keyed under the entry group itself) and set to the child name for aggregates.
+func (ps *ProxyServer) storeAffinityBinding(
+	affCtx *affinityCtx,
+	ch channel.ChannelProxy,
+	originalGroup *models.Group,
+	group *models.Group,
+	apiKey *models.APIKey,
+	upstreamIdx int,
+) {
+	subGroup := ""
+	if originalGroup.GroupType == "aggregate" && group.ID != originalGroup.ID {
+		subGroup = group.Name
+	}
+	b := &affinity.Binding{
+		GroupID:     affCtx.entryGroupID,
+		KeyID:       apiKey.ID,
+		UpstreamIdx: upstreamIdx,
+		BaseURL:     ch.UpstreamBaseURL(upstreamIdx),
+		SubGroup:    subGroup,
+	}
+	if err := ps.affinityMgr.SetBinding(affCtx.entryGroupID, affCtx.affinityKey, b, affCtx.ttl); err != nil {
+		logrus.WithError(err).Warn("Failed to store affinity binding")
+	}
 }
 
 // logRequest is a helper function to create and record a request log.

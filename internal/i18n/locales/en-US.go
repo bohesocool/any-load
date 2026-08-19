@@ -174,10 +174,19 @@ var MessagesEnUS = map[string]string{
 	"config.key_validation_timeout":          "Key Validation Timeout (seconds)",
 	"config.key_validation_timeout_desc":     "API request timeout (seconds) when validating a single key in the background.",
 
+	// Routing config related
+	"config.channel_affinity":             "Channel Affinity",
+	"config.channel_affinity_desc":        "When enabled, requests from the same session are consistently routed to the same upstream endpoint and key combination (beneficial for upstream session state and caching). The affinity key is derived in priority order from: session headers → session/prompt_cache_key/conversation ID in body → first-message hash. Groups can override this value.",
+	"config.channel_affinity_ttl":          "Affinity Binding TTL (seconds)",
+	"config.channel_affinity_ttl_desc":     "Time-to-live (seconds) for channel affinity bindings; the binding is re-selected after expiry. 0 means no expiry.",
+	"config.max_concurrency_per_key":       "Max Concurrency per Key",
+	"config.max_concurrency_per_key_desc":  "Maximum concurrent in-flight requests per key within a group. Keys exceeding this limit are skipped and rotation falls through to other keys. 0 means unlimited. Groups can override this value.",
+
 	// Category labels
 	"config.category.basic":   "Basic",
 	"config.category.request": "Request Settings",
 	"config.category.key":     "Key Configuration",
+	"config.category.routing": "Routing",
 
 	// Internal error messages (for fmt.Errorf usage)
 	"error.upstreams_required":       "upstreams field is required",

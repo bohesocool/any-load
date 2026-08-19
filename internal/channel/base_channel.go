@@ -42,20 +42,23 @@ type BaseChannel struct {
 	modelRedirectStrict bool
 }
 
-// getUpstreamURL selects an upstream URL using a smooth weighted round-robin algorithm.
-func (b *BaseChannel) getUpstreamURL() *url.URL {
+// getUpstreamURL selects an upstream URL using a smooth weighted round-robin
+// algorithm, returning the chosen upstream's index alongside its URL so the
+// caller (channel affinity) can replay the same upstream later.
+func (b *BaseChannel) getUpstreamURL() (*url.URL, int) {
 	b.upstreamLock.Lock()
 	defer b.upstreamLock.Unlock()
 
 	if len(b.Upstreams) == 0 {
-		return nil
+		return nil, 0
 	}
 	if len(b.Upstreams) == 1 {
-		return b.Upstreams[0].URL
+		return b.Upstreams[0].URL, 0
 	}
 
 	totalWeight := 0
 	var best *UpstreamInfo
+	bestIdx := 0
 
 	for i := range b.Upstreams {
 		up := &b.Upstreams[i]
@@ -64,24 +67,20 @@ func (b *BaseChannel) getUpstreamURL() *url.URL {
 
 		if best == nil || up.CurrentWeight > best.CurrentWeight {
 			best = up
+			bestIdx = i
 		}
 	}
 
 	if best == nil {
-		return b.Upstreams[0].URL // 降级到第一个可用的
+		return b.Upstreams[0].URL, 0 // 降级到第一个可用的
 	}
 
 	best.CurrentWeight -= totalWeight
-	return best.URL
+	return best.URL, bestIdx
 }
 
-// BuildUpstreamURL constructs the target URL for the upstream service.
-func (b *BaseChannel) BuildUpstreamURL(originalURL *url.URL, groupName string) (string, error) {
-	base := b.getUpstreamURL()
-	if base == nil {
-		return "", fmt.Errorf("no upstream URL configured for channel %s", b.Name)
-	}
-
+// buildURL joins an upstream base URL with the inbound request path/query.
+func (b *BaseChannel) buildURL(base *url.URL, originalURL *url.URL, groupName string) string {
 	finalURL := *base
 	proxyPrefix := "/proxy/" + groupName
 	requestPath := originalURL.Path
@@ -91,7 +90,52 @@ func (b *BaseChannel) BuildUpstreamURL(originalURL *url.URL, groupName string) (
 
 	finalURL.RawQuery = originalURL.RawQuery
 
-	return finalURL.String(), nil
+	return finalURL.String()
+}
+
+// BuildUpstreamURL constructs the target URL for the upstream service using
+// weighted round-robin, and returns the chosen upstream index so affinity
+// bindings can record it.
+func (b *BaseChannel) BuildUpstreamURL(originalURL *url.URL, groupName string) (string, int, error) {
+	base, idx := b.getUpstreamURL()
+	if base == nil {
+		return "", 0, fmt.Errorf("no upstream URL configured for channel %s", b.Name)
+	}
+	return b.buildURL(base, originalURL, groupName), idx, nil
+}
+
+// BuildUpstreamURLAt constructs the target URL using the upstream at the given
+// index. It is used to replay the upstream chosen by a channel-affinity
+// binding. Returns an error if idx is out of range (the group's upstream list
+// changed since the binding was created); callers should then fall back to a
+// fresh weighted selection.
+func (b *BaseChannel) BuildUpstreamURLAt(originalURL *url.URL, groupName string, idx int) (string, error) {
+	b.upstreamLock.Lock()
+	defer b.upstreamLock.Unlock()
+
+	if idx < 0 || idx >= len(b.Upstreams) {
+		return "", fmt.Errorf("upstream index %d out of range for channel %s", idx, b.Name)
+	}
+	return b.buildURL(b.Upstreams[idx].URL, originalURL, groupName), nil
+}
+
+// UpstreamBaseURL returns the base URL string of the upstream at idx, for
+// validating that an affinity binding's upstream is still the same. The caller
+// holds no lock; this acquires upstreamLock for a consistent read.
+func (b *BaseChannel) UpstreamBaseURL(idx int) string {
+	b.upstreamLock.Lock()
+	defer b.upstreamLock.Unlock()
+	if idx < 0 || idx >= len(b.Upstreams) {
+		return ""
+	}
+	return b.Upstreams[idx].URL.String()
+}
+
+// UpstreamCount returns the number of configured upstreams.
+func (b *BaseChannel) UpstreamCount() int {
+	b.upstreamLock.Lock()
+	defer b.upstreamLock.Unlock()
+	return len(b.Upstreams)
 }
 
 // IsConfigStale checks if the channel's configuration is stale compared to the provided group.
