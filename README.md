@@ -247,7 +247,7 @@ Supported Proxy Protocol Formats:
 | Global Proxy Keys           | `proxy_keys`                         | Initial value from `AUTH_KEY` | ❌             | Globally effective proxy keys, comma-separated               |
 | Log Retention Days          | `request_log_retention_days`         | 7                             | ❌             | Request log retention days, 0 for no cleanup                 |
 | Log Write Interval          | `request_log_write_interval_minutes` | 1                             | ❌             | Log write to database cycle (minutes)                        |
-| Enable Request Body Logging | `enable_request_body_logging`        | false                         | ✅             | Whether to log complete request body content in request logs |
+| Enable Request Body Logging | `enable_request_body_logging`        | false                         | ✅             | Whether to log complete request body and upstream response content in request logs |
 
 **Request Settings:**
 

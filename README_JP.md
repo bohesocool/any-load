@@ -247,7 +247,7 @@ Any-Loadは、アップストリームAIプロバイダーへのリクエスト�
 | グローバルプロキシキー     | `proxy_keys`                         | `AUTH_KEY`の初期値      | ❌             | グローバルに有効なプロキシキー、カンマ区切り                 |
 | ログ保持日数               | `request_log_retention_days`         | 7                       | ❌             | リクエストログ保持日数、0でクリーンアップなし                |
 | ログ書き込み間隔           | `request_log_write_interval_minutes` | 1                       | ❌             | データベースへのログ書き込みサイクル（分）                   |
-| リクエストボディログ有効化 | `enable_request_body_logging`        | false                   | ✅             | リクエストログに完全なリクエストボディコンテンツを記録するか |
+| リクエストボディログ有効化 | `enable_request_body_logging`        | false                   | ✅             | リクエストログに完全なリクエストボディとアップストリームレスポンスの内容を記録するか |
 
 **リクエスト設定：**
 

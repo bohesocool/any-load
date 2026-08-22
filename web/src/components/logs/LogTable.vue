@@ -891,8 +891,41 @@ const deselectAllColumns = () => {
                     </template>
                   </n-button>
                 </div>
-                <div class="compact-field-content">
+                <div class="compact-field-content compact-field-content-tall">
                   {{ formatJsonString(selectedLog.request_body) }}
+                </div>
+              </div>
+            </div>
+          </n-card>
+
+          <!-- 响应信息 -->
+          <n-card
+            v-if="selectedLog.response_body"
+            :title="t('logs.responseInfo')"
+            size="small"
+            :header-style="{ padding: '8px 12px', fontSize: '13px' }"
+          >
+            <div class="compact-fields">
+              <div class="compact-field">
+                <div class="compact-field-header">
+                  <span class="compact-field-title">{{ t("logs.responseContent") }}</span>
+                  <n-button
+                    size="tiny"
+                    text
+                    @click="
+                      copyContent(
+                        formatJsonString(selectedLog.response_body),
+                        t('logs.responseContent')
+                      )
+                    "
+                  >
+                    <template #icon>
+                      <n-icon :component="CopyOutline" />
+                    </template>
+                  </n-button>
+                </div>
+                <div class="compact-field-content compact-field-content-tall">
+                  {{ formatJsonString(selectedLog.response_body) }}
                 </div>
               </div>
             </div>
@@ -1197,6 +1230,11 @@ const deselectAllColumns = () => {
   color: var(--text-primary);
   max-height: 100px;
   overflow-y: auto;
+}
+
+/* 请求体/响应体内容较长，给更大的可视区域 */
+.compact-field-content-tall {
+  max-height: 360px;
 }
 
 .detail-field {

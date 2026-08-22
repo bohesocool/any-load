@@ -516,6 +516,8 @@ export default {
     requestInfo: "リクエスト情報",
     upstreamAddress: "アップストリームアドレス",
     requestContent: "リクエスト内容",
+    responseInfo: "レスポンス情報",
+    responseContent: "レスポンス内容",
     errorInfo: "エラー情報",
     customColumns: "カラムのカスタマイズ",
   },

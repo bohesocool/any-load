@@ -299,13 +299,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		ir, err := conv.inHandler.ParseInboundRequest(c.Request.URL.Path, bodyBytes)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "")
 			return
 		}
 		// Apply model redirect on the IR model.
 		if redirected, rerr := channel.RedirectModel(ir.Model, group); rerr != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, rerr.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, rerr, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, rerr, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "")
 			return
 		} else {
 			ir.Model = redirected
@@ -317,7 +317,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		reqBody, err = conv.upHandler.EmitUpstreamRequest(ir)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "")
 			return
 		}
 	} else {
@@ -328,7 +328,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
-		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal)
+		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "")
 		return
 	}
 	// Release the per-key concurrency slot when this attempt fully completes
@@ -368,7 +368,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "")
 			return
 		}
 
@@ -406,13 +406,14 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil || shouldRetryByStatus {
 		if err != nil && app_errors.IsIgnorableError(err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "")
 			return
 		}
 
 		var statusCode int
 		var errorMessage string
 		var parsedError string
+		var upstreamRespBody string
 
 		if err != nil {
 			statusCode = 500
@@ -438,6 +439,10 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		// 传输层错误会把完整 URL 带入 err.Error()），返回客户端和落库前先脱敏
 		errorMessage = utils.RedactSecret(errorMessage, apiKey.KeyValue)
 		parsedError = utils.RedactSecret(parsedError, apiKey.KeyValue)
+		if err == nil {
+			// 有真实的上游响应时，把完整错误响应体记录到日志详情
+			upstreamRespBody = errorMessage
+		}
 
 		// 使用解析后的错误信息更新密钥状态
 		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
@@ -449,7 +454,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamURL, channelHandler, bodyBytes, requestType)
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamURL, channelHandler, bodyBytes, requestType, upstreamRespBody)
 
 		// 如果是最后一次尝试，直接返回错误，不再递归
 		if isLastAttempt {
@@ -469,14 +474,21 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// ps.keyProvider.UpdateStatus(apiKey, group, true) // 请求成功不再重置成功次数，减少IO消耗
 	logrus.Debugf("Request for group %s succeeded on attempt %d with key %s", group.Name, retryCount+1, utils.MaskAPIKey(apiKey.KeyValue))
 
+	// Capture a copy of the upstream response for the request log while it is
+	// forwarded to the client (only when body logging is enabled).
+	var capture *responseCapture
+	if cfg.EnableRequestBodyLogging {
+		capture = &responseCapture{}
+	}
+
 	// In conversion mode, translate the upstream response back to the client's
 	// inbound format. Otherwise (passthrough, or smart-passthrough target)
 	// forward the response as-is.
 	if conv != nil {
-		ps.dispatchConversionResponse(c, resp, conv, isStream)
+		ps.dispatchConversionResponse(c, resp, conv, isStream, capture)
 	} else if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		// Check if this is a model list request (needs special handling)
-		ps.handleModelListResponse(c, resp, group, channelHandler)
+		ps.handleModelListResponse(c, resp, group, channelHandler, capture)
 	} else {
 		for key, values := range resp.Header {
 			for _, value := range values {
@@ -486,13 +498,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		c.Status(resp.StatusCode)
 
 		if isStream {
-			ps.handleStreamingResponse(c, resp)
+			ps.handleStreamingResponse(c, resp, capture)
 		} else {
-			ps.handleNormalResponse(c, resp)
+			ps.handleNormalResponse(c, resp, capture)
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal)
+	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, capture.bodyForLog(resp))
 }
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
@@ -609,15 +621,17 @@ func (ps *ProxyServer) logRequest(
 	channelHandler channel.ChannelProxy,
 	bodyBytes []byte,
 	requestType string,
+	responseBody string,
 ) {
 	if ps.requestLogService == nil {
 		return
 	}
 
-	var requestBodyToLog, userAgent string
+	var requestBodyToLog, responseBodyToLog, userAgent string
 
 	if group.EffectiveConfig.EnableRequestBodyLogging {
-		requestBodyToLog = utils.TruncateString(string(bodyBytes), 65000)
+		requestBodyToLog = string(bodyBytes)
+		responseBodyToLog = responseBody
 		userAgent = c.Request.UserAgent()
 	}
 
@@ -636,6 +650,7 @@ func (ps *ProxyServer) logRequest(
 		IsStream:     isStream,
 		UpstreamAddr: utils.TruncateString(upstreamAddr, 500),
 		RequestBody:  requestBodyToLog,
+		ResponseBody: responseBodyToLog,
 	}
 
 	// Set parent group

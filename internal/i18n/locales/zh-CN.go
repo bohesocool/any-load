@@ -145,7 +145,7 @@ var MessagesZhCN = map[string]string{
 	"config.log_write_interval":               "日志延迟写入周期（分钟）",
 	"config.log_write_interval_desc":          "请求日志从缓存写入数据库的周期（分钟），0为实时写入数据。",
 	"config.enable_request_body_logging":      "启用日志详情",
-	"config.enable_request_body_logging_desc": "是否在请求日志中记录完整的请求体内容。启用此功能会增加内存以及存储空间的占用。",
+	"config.enable_request_body_logging_desc": "是否在请求日志中记录完整的请求体和上游响应内容。启用此功能会增加内存以及存储空间的占用。",
 
 	// Request settings related
 	"config.request_timeout":              "请求超时（秒）",

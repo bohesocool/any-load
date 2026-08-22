@@ -15,10 +15,11 @@ import (
 // dispatchConversionResponse translates an upstream response (in the upstream
 // handler's format) back to the client's inbound format (via the chat IR) and
 // writes it to the client. Non-stream responses are translated as a whole;
-// streaming responses are translated chunk-by-chunk as SSE.
-func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, isStream bool) {
+// streaming responses are translated chunk-by-chunk as SSE. The raw upstream
+// body (decompressed) is copied into capture for request logging when set.
+func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, isStream bool, capture *responseCapture) {
 	if isStream {
-		ps.handleStreamingConversionResponse(c, resp, conv)
+		ps.handleStreamingConversionResponse(c, resp, conv, capture)
 		return
 	}
 
@@ -30,6 +31,10 @@ func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Res
 	}
 
 	bodyBytes = handleGzipCompression(resp, bodyBytes)
+	if capture != nil {
+		capture.decoded = true
+		capture.Write(bodyBytes)
+	}
 
 	ir, err := conv.upHandler.ParseUpstreamResponse(bodyBytes)
 	if err != nil {
@@ -56,7 +61,7 @@ func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Res
 // handler's format), converts them to IR stream events via the upstream parser,
 // then to the client's inbound SSE format via the inbound emitter, and streams
 // them to the client. The emitter's Done() frames terminate the stream.
-func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx) {
+func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, capture *responseCapture) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -65,13 +70,19 @@ func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *h
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		logrus.Error("Streaming unsupported by the writer, falling back to normal response")
-		ps.dispatchConversionResponse(c, resp, conv, false)
+		ps.dispatchConversionResponse(c, resp, conv, false, capture)
 		return
 	}
 
 	parser := conv.upHandler.NewUpstreamStreamParser()
 	emitter := conv.inHandler.NewInboundStreamEmitter("")
-	br := bufio.NewReaderSize(resp.Body, 64*1024)
+	var upstreamBody io.Reader = resp.Body
+	if capture != nil {
+		// Capture the raw upstream SSE stream (before conversion) so the log
+		// reflects exactly what the upstream returned.
+		upstreamBody = io.TeeReader(resp.Body, capture)
+	}
+	br := bufio.NewReaderSize(upstreamBody, 64*1024)
 
 	writeChunks := func(chunks []protocol.StreamChunk) bool {
 		for _, ch := range chunks {

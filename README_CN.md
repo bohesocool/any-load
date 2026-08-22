@@ -247,7 +247,7 @@ Any-Load 会自动从环境变量中读取代理设置，用于向上游 AI 服�
 | 全局代理密钥 | `proxy_keys`                         | 初始值为环境配置的 AUTH_KEY | ❌         | 全局生效的代理认证密钥，多个用逗号分隔                         |
 | 日志保留天数 | `request_log_retention_days`         | 7                           | ❌         | 请求日志保留天数，0 为不清理                                   |
 | 日志写入间隔 | `request_log_write_interval_minutes` | 1                           | ❌         | 日志写入数据库周期（分钟）                                     |
-| 启用日志详情 | `enable_request_body_logging`        | false                       | ✅         | 是否在请求日志中记录完整的请求体内容，启用会增加内存和存储占用 |
+| 启用日志详情 | `enable_request_body_logging`        | false                       | ✅         | 是否在请求日志中记录完整的请求体和上游响应内容，启用会增加内存和存储占用 |
 
 **请求设置：**
 

@@ -25,7 +25,7 @@ func shouldInterceptModelList(path string, method string) bool {
 }
 
 // handleModelListResponse processes the model list response and applies filtering based on redirect rules
-func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Response, group *models.Group, channelHandler channel.ChannelProxy) {
+func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Response, group *models.Group, channelHandler channel.ChannelProxy, capture *responseCapture) {
 	// Read the upstream response body
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -40,6 +40,11 @@ func (ps *ProxyServer) handleModelListResponse(c *gin.Context, resp *http.Respon
 	if err != nil {
 		logrus.WithError(err).Warn("Decompression failed, using original data")
 		decompressed = bodyBytes
+	}
+
+	if capture != nil {
+		capture.decoded = true
+		capture.Write(decompressed)
 	}
 
 	// Transform model list (returns map[string]any directly, no marshaling)
