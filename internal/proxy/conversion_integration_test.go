@@ -49,11 +49,19 @@ func sqliteDSN(t *testing.T) string {
 	return fmt.Sprintf("file:%s?mode=memory&cache=shared", name)
 }
 
+// testEnvOption configures a test group beyond the defaults in newTestEnv.
+type testEnvOption func(*models.Group)
+
+// withStreamMode sets the group's StreamMode (default is empty/passthrough).
+func withStreamMode(mode string) testEnvOption {
+	return func(g *models.Group) { g.StreamMode = mode }
+}
+
 // newTestEnv builds a ProxyServer wired to a mock upstream. channelType is the
 // group's ChannelType (a registered channel type, e.g. "openai"/"anthropic");
 // upstreamFormatsJSON is the group's UpstreamFormats (e.g. `["anthropic"]`).
 // ProtocolConversion is forced on.
-func newTestEnv(t *testing.T, upstreamURL, channelType, upstreamFormatsJSON string) *testEnv {
+func newTestEnv(t *testing.T, upstreamURL, channelType, upstreamFormatsJSON string, opts ...testEnvOption) *testEnv {
 	t.Helper()
 	memStore := store.NewMemoryStore()
 	encSvc, _ := encryption.NewService("") // noop: encrypt/decrypt are identity
@@ -75,6 +83,9 @@ func newTestEnv(t *testing.T, upstreamURL, channelType, upstreamFormatsJSON stri
 		TestModel:           "test-model",
 		ProtocolConversion:  true,
 		UpstreamFormats:     datatypes.JSON(upstreamFormatsJSON),
+	}
+	for _, opt := range opts {
+		opt(group)
 	}
 	if err := gormDB.Create(group).Error; err != nil {
 		t.Fatalf("create group: %v", err)

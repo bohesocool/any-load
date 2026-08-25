@@ -80,6 +80,7 @@ interface GroupFormData {
   proxy_keys: string;
   protocol_conversion: boolean;
   upstream_formats: string[];
+  stream_mode: string;
   group_type?: string;
 }
 
@@ -107,6 +108,7 @@ const formData = reactive<GroupFormData>({
   proxy_keys: "",
   protocol_conversion: false,
   upstream_formats: [],
+  stream_mode: "passthrough",
   group_type: "standard",
 });
 
@@ -119,6 +121,14 @@ const upstreamFormatOptions = ref<{ label: string; value: string }[]>([
   { label: "Gemini", value: "gemini" },
 ]);
 const configOptions = ref<GroupConfigOption[]>([]);
+// Stream mode options for protocol conversion. Controls how the upstream
+// stream flag is decoupled from the client's stream intent. Labels are i18n
+// keys resolved via computed so they react to locale changes.
+const streamModeOptions = computed<{ label: string; value: string }[]>(() => [
+  { label: t("keys.streamModePassthrough"), value: "passthrough" },
+  { label: t("keys.streamModeFakeNonStream"), value: "fake_non_stream" },
+  { label: t("keys.streamModeFakeStream"), value: "fake_stream" },
+]);
 const channelTypesFetched = ref(false);
 const configOptionsFetched = ref(false);
 
@@ -317,6 +327,7 @@ function resetForm() {
     proxy_keys: "",
     protocol_conversion: false,
     upstream_formats: [],
+    stream_mode: "passthrough",
     group_type: "standard",
   });
 
@@ -365,6 +376,7 @@ function loadGroupData() {
     proxy_keys: props.group.proxy_keys || "",
     protocol_conversion: props.group.protocol_conversion || false,
     upstream_formats: props.group.upstream_formats || [],
+    stream_mode: props.group.stream_mode || "passthrough",
     group_type: props.group.group_type || "standard",
   });
 }
@@ -562,6 +574,7 @@ async function handleSubmit() {
       proxy_keys: formData.proxy_keys,
       protocol_conversion: formData.protocol_conversion,
       upstream_formats: formData.protocol_conversion ? formData.upstream_formats : [],
+      stream_mode: formData.protocol_conversion ? formData.stream_mode : "passthrough",
     };
 
     let res: Group;
@@ -730,6 +743,28 @@ async function handleSubmit() {
                 :options="upstreamFormatOptions"
                 multiple
                 :placeholder="t('keys.selectUpstreamFormats')"
+              />
+            </n-form-item>
+          </div>
+
+          <!-- Stream mode (only when protocol conversion is on) -->
+          <div v-if="formData.protocol_conversion" class="form-row">
+            <n-form-item :label="t('keys.streamMode')" path="stream_mode" class="form-item-half">
+              <template #label>
+                <div class="form-label-with-tooltip">
+                  {{ t("keys.streamMode") }}
+                  <n-tooltip trigger="hover" placement="top">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" class="help-icon" />
+                    </template>
+                    {{ t("keys.streamModeTooltip") }}
+                  </n-tooltip>
+                </div>
+              </template>
+              <n-select
+                v-model:value="formData.stream_mode"
+                :options="streamModeOptions"
+                :placeholder="t('keys.selectStreamMode')"
               />
             </n-form-item>
           </div>

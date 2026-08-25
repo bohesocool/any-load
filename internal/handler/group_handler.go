@@ -65,6 +65,7 @@ type GroupCreateRequest struct {
 	ProxyKeys           string              `json:"proxy_keys"`
 	ProtocolConversion  bool                `json:"protocol_conversion"`
 	UpstreamFormats     []string            `json:"upstream_formats"`
+	StreamMode          string              `json:"stream_mode"`
 }
 
 // CreateGroup handles the creation of a new group.
@@ -93,6 +94,7 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		ProxyKeys:           req.ProxyKeys,
 		ProtocolConversion:  req.ProtocolConversion,
 		UpstreamFormats:     req.UpstreamFormats,
+		StreamMode:          req.StreamMode,
 	}
 
 	group, err := s.GroupService.CreateGroup(c.Request.Context(), params)
@@ -138,6 +140,7 @@ type GroupUpdateRequest struct {
 	ProxyKeys           *string             `json:"proxy_keys,omitempty"`
 	ProtocolConversion  *bool               `json:"protocol_conversion,omitempty"`
 	UpstreamFormats     []string            `json:"upstream_formats"`
+	StreamMode          *string             `json:"stream_mode,omitempty"`
 }
 
 type GroupReorderItemRequest struct {
@@ -220,6 +223,7 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		params.UpstreamFormats = req.UpstreamFormats
 		params.HasUpstreamFormats = true
 	}
+	params.StreamMode = req.StreamMode
 
 	group, err := s.GroupService.UpdateGroup(c.Request.Context(), uint(id), params)
 	if s.handleGroupError(c, err) {
@@ -277,6 +281,7 @@ type GroupResponse struct {
 	ProxyKeys           string              `json:"proxy_keys"`
 	ProtocolConversion  bool                `json:"protocol_conversion"`
 	UpstreamFormats     datatypes.JSON      `json:"upstream_formats"`
+	StreamMode          string              `json:"stream_mode"`
 	LastValidatedAt     *time.Time          `json:"last_validated_at"`
 	CreatedAt           time.Time           `json:"created_at"`
 	UpdatedAt           time.Time           `json:"updated_at"`
@@ -323,6 +328,7 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		ProxyKeys:           group.ProxyKeys,
 		ProtocolConversion:  group.ProtocolConversion,
 		UpstreamFormats:     group.UpstreamFormats,
+		StreamMode:          group.StreamMode,
 		LastValidatedAt:     group.LastValidatedAt,
 		CreatedAt:           group.CreatedAt,
 		UpdatedAt:           group.UpdatedAt,

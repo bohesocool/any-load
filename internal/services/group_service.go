@@ -104,6 +104,7 @@ type GroupCreateParams struct {
 	SubGroups           []SubGroupInput
 	ProtocolConversion  bool
 	UpstreamFormats     []string
+	StreamMode          string
 }
 
 // GroupUpdateParams captures updatable fields for a group.
@@ -129,6 +130,7 @@ type GroupUpdateParams struct {
 	ProtocolConversion  *bool
 	HasUpstreamFormats  bool
 	UpstreamFormats     []string
+	StreamMode          *string
 }
 
 // GroupReorderItem captures a group ID and target sort value.
@@ -224,6 +226,8 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		return nil, err
 	}
 
+	streamMode := validateStreamMode(params.StreamMode, params.ProtocolConversion)
+
 	headerRulesJSON, err := s.normalizeHeaderRules(params.HeaderRules)
 	if err != nil {
 		return nil, err
@@ -260,6 +264,7 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ProxyKeys:           strings.TrimSpace(params.ProxyKeys),
 		ProtocolConversion: params.ProtocolConversion,
 		UpstreamFormats:     cleanedUpstreamFormats,
+		StreamMode:          streamMode,
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -446,6 +451,9 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 			return nil, err
 		}
 		group.UpstreamFormats = cleaned
+	}
+	if params.StreamMode != nil {
+		group.StreamMode = validateStreamMode(*params.StreamMode, newProtocolConversion)
 	}
 	if params.ProtocolConversion != nil {
 		group.ProtocolConversion = *params.ProtocolConversion
@@ -1113,6 +1121,23 @@ func validateUpstreamFormats(formats []string, protocolConversion bool) (datatyp
 		return nil, app_errors.ErrValidation
 	}
 	return datatypes.JSON(b), nil
+}
+
+// validateStreamMode normalizes a group's stream mode. It returns the mode to
+// store, silently coercing to "passthrough" when the value is empty/unknown or
+// when protocol conversion is disabled (stream_mode only applies on the
+// conversion path). Unknown values are coerced rather than rejected so a
+// misconfigured value never blocks group creation/update.
+func validateStreamMode(mode string, protocolConversion bool) string {
+	if !protocolConversion {
+		return protocol.StreamModePassthrough
+	}
+	switch mode {
+	case protocol.StreamModeFakeNonStream, protocol.StreamModeFakeStream:
+		return mode
+	default:
+		return protocol.StreamModePassthrough
+	}
 }
 
 // convertToJSONMap converts a map[string]string to datatypes.JSONMap

@@ -168,16 +168,28 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		return
 	}
 
-	var isStream bool
+	// Stream decoupling: clientStream is always the client's intent (what the
+	// client expects back). upstreamStream is what we ask the upstream for. In
+	// passthrough (no conversion) they are identical. In conversion mode the
+	// group's StreamMode can flip the upstream stream flag independently of the
+	// client: fake_non_stream forces the upstream to stream (and the proxy
+	// buffers it into one response when the client wanted non-stream);
+	// fake_stream forces the upstream to non-stream (and the proxy expands it
+	// into SSE when the client wanted stream). When the two coincide the
+	// behavior is identical to passthrough. StreamMode only applies on the
+	// conversion path; the passthrough branch is untouched.
+	var clientStream, upstreamStream bool
 	if conv != nil {
 		// Stream intent is format-specific: chat/anthropic use the body `stream`
 		// field; gemini uses the path suffix :streamGenerateContent.
-		isStream = conv.inHandler.IsInboundStream(c.Request.URL.Path, bodyBytes)
+		clientStream = conv.inHandler.IsInboundStream(c.Request.URL.Path, bodyBytes)
+		upstreamStream = resolveUpstreamStream(group.StreamMode, clientStream)
 	} else {
-		isStream = channelHandler.IsStreamRequest(c, bodyBytes)
+		clientStream = channelHandler.IsStreamRequest(c, bodyBytes)
+		upstreamStream = clientStream
 	}
 
-	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, isStream, startTime, 0, affCtx, conv)
+	ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, finalBodyBytes, clientStream, upstreamStream, startTime, 0, affCtx, conv)
 }
 
 // convCtx carries the conversion handlers resolved for a request. A nil
@@ -221,6 +233,25 @@ func (ps *ProxyServer) resolveConversion(c *gin.Context, group *models.Group) (*
 			fmt.Sprintf("protocol conversion target %q is not supported", targetFormat))
 	}
 	return &convCtx{inHandler: inHandler, upHandler: upHandler}, nil
+}
+
+// resolveUpstreamStream decides whether the upstream request should stream,
+// given the group's StreamMode and the client's stream intent. passthrough
+// (the default) keeps upstream aligned with the client. fake_non_stream
+// forces the upstream to stream (so a non-stream client request is served by
+// buffering the upstream SSE into one response). fake_stream forces the
+// upstream to non-stream (so a stream client request is served by expanding
+// the upstream's single response into SSE). Only consulted on the conversion
+// path; the passthrough branch never calls this.
+func resolveUpstreamStream(streamMode string, clientStream bool) bool {
+	switch streamMode {
+	case protocol.StreamModeFakeNonStream:
+		return true
+	case protocol.StreamModeFakeStream:
+		return false
+	default: // StreamModePassthrough or empty
+		return clientStream
+	}
 }
 
 // resolveAffinity derives the affinity key for the request and, if affinity is
@@ -279,7 +310,8 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	originalGroup *models.Group,
 	group *models.Group,
 	bodyBytes []byte,
-	isStream bool,
+	clientStream bool,
+	upstreamStream bool,
 	startTime time.Time,
 	retryCount int,
 	affCtx *affinityCtx,
@@ -294,30 +326,32 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// the target's native path. In passthrough mode both are the inbound
 	// values unchanged.
 	var reqBody []byte
+	var irModel string // the (redirected) IR model, threaded to the response emitter
 	srcURL := c.Request.URL
 	if conv != nil {
 		ir, err := conv.inHandler.ParseInboundRequest(c.Request.URL.Path, bodyBytes)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, clientStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 			return
 		}
 		// Apply model redirect on the IR model.
 		if redirected, rerr := channel.RedirectModel(ir.Model, group); rerr != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, rerr.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, rerr, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, rerr, clientStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 			return
 		} else {
 			ir.Model = redirected
 		}
-		ir.Stream = isStream
+		ir.Stream = upstreamStream
+		irModel = ir.Model
 
-		path, rawQuery := conv.upHandler.UpstreamPath(ir.Model, isStream)
+		path, rawQuery := conv.upHandler.UpstreamPath(ir.Model, upstreamStream)
 		srcURL = &url.URL{Path: path, RawQuery: rawQuery}
 		reqBody, err = conv.upHandler.EmitUpstreamRequest(ir)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+			ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusBadRequest, err, clientStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 			return
 		}
 	} else {
@@ -337,7 +371,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil {
 		logrus.Errorf("Failed to select a key for group %s on attempt %d: %v", group.Name, retryCount+1, err)
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrNoKeysAvailable, err.Error()))
-		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, isStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+		ps.logRequest(c, originalGroup, group, nil, startTime, http.StatusServiceUnavailable, err, clientStream, "", channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 		return
 	}
 	// Release the per-key concurrency slot when this attempt fully completes
@@ -346,7 +380,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if isStream {
+	if upstreamStream {
 		ctx, cancel = context.WithCancel(c.Request.Context())
 	} else {
 		timeout := time.Duration(cfg.RequestTimeout) * time.Second
@@ -377,7 +411,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		finalBodyBytes, err := channelHandler.ApplyModelRedirect(req, bodyBytes, group)
 		if err != nil {
 			response.Error(c, app_errors.NewAPIError(app_errors.ErrBadRequest, err.Error()))
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, http.StatusBadRequest, err, clientStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 			return
 		}
 
@@ -397,7 +431,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	}
 
 	var client *http.Client
-	if isStream {
+	if upstreamStream {
 		client = channelHandler.GetStreamClient()
 		req.Header.Set("X-Accel-Buffering", "no")
 	} else {
@@ -415,7 +449,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	if err != nil || shouldRetryByStatus {
 		if err != nil && app_errors.IsIgnorableError(err) {
 			logrus.Debugf("Client-side ignorable error for key %s, aborting retries: %v", utils.MaskAPIKey(apiKey.KeyValue), err)
-			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
+			ps.logRequest(c, originalGroup, group, apiKey, startTime, 499, err, clientStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, "", "", "")
 			return
 		}
 
@@ -463,7 +497,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			requestType = models.RequestTypeFinal
 		}
 
-		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), isStream, upstreamURL, channelHandler, bodyBytes, requestType, upstreamRespBody, upstreamRequestBodyForLog, "")
+		ps.logRequest(c, originalGroup, group, apiKey, startTime, statusCode, errors.New(parsedError), clientStream, upstreamURL, channelHandler, bodyBytes, requestType, upstreamRespBody, upstreamRequestBodyForLog, "")
 
 		// 如果是最后一次尝试，直接返回错误，不再递归
 		if isLastAttempt {
@@ -476,7 +510,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			return
 		}
 
-		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, isStream, startTime, retryCount+1, affCtx, conv)
+		ps.executeRequestWithRetry(c, channelHandler, originalGroup, group, bodyBytes, clientStream, upstreamStream, startTime, retryCount+1, affCtx, conv)
 		return
 	}
 
@@ -498,7 +532,7 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// inbound format. Otherwise (passthrough, or smart-passthrough target)
 	// forward the response as-is.
 	if conv != nil {
-		ps.dispatchConversionResponse(c, resp, conv, isStream, capture, clientCapture)
+		ps.dispatchConversionResponse(c, resp, conv, upstreamStream, clientStream, irModel, capture, clientCapture)
 	} else if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		// Check if this is a model list request (needs special handling)
 		ps.handleModelListResponse(c, resp, group, channelHandler, capture)
@@ -510,14 +544,14 @@ func (ps *ProxyServer) executeRequestWithRetry(
 		}
 		c.Status(resp.StatusCode)
 
-		if isStream {
+		if clientStream {
 			ps.handleStreamingResponse(c, resp, capture)
 		} else {
 			ps.handleNormalResponse(c, resp, capture)
 		}
 	}
 
-	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, isStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, capture.bodyForLog(resp), upstreamRequestBodyForLog, clientCapture.bodyForLogRaw())
+	ps.logRequest(c, originalGroup, group, apiKey, startTime, resp.StatusCode, nil, clientStream, upstreamURL, channelHandler, bodyBytes, models.RequestTypeFinal, capture.bodyForLog(resp), upstreamRequestBodyForLog, clientCapture.bodyForLogRaw())
 }
 
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {

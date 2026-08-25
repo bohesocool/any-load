@@ -106,6 +106,14 @@ type Group struct {
 	// (e.g. ["anthropic","openai-chat"]). Used only when ProtocolConversion is
 	// true. Empty means no conversion target (falls back to passthrough).
 	UpstreamFormats datatypes.JSON `gorm:"type:json" json:"upstream_formats"`
+	// StreamMode decouples the upstream stream flag from the client's stream
+	// intent on the protocol-conversion path. "passthrough" (default) keeps
+	// them aligned; "fake_non_stream" forces the upstream to stream and the
+	// proxy buffers it into one response when the client wanted non-stream;
+	// "fake_stream" forces the upstream to non-stream and the proxy expands it
+	// into SSE when the client wanted stream. Ignored when ProtocolConversion
+	// is false (and on the smart-passthrough path, where conv is nil).
+	StreamMode string `gorm:"type:varchar(32);default:'passthrough'" json:"stream_mode"`
 	TestModel           string               `gorm:"type:varchar(255);not null" json:"test_model"`
 	ParamOverrides      datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
 	Config              datatypes.JSONMap    `gorm:"type:json" json:"config"`
