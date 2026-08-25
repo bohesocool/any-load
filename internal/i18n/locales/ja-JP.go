@@ -224,4 +224,7 @@ var MessagesJaJP = map[string]string{
 	"group.not_aggregate":              "グループはアグリゲートグループではありません",
 	"group.sub_group_already_exists":   "サブグループ{{.sub_group_id}}は既に存在します",
 	"group.sub_group_not_found":        "サブグループが見つかりません",
+
+	// Proxy-facing messages (resolved per client via Accept-Language)
+	"proxy.fuzzy_failover_message": "リクエストエラーです。後でもう一度お試しください。",
 }

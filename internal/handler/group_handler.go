@@ -66,6 +66,8 @@ type GroupCreateRequest struct {
 	ProtocolConversion  bool                `json:"protocol_conversion"`
 	UpstreamFormats     []string            `json:"upstream_formats"`
 	StreamMode          string              `json:"stream_mode"`
+	FuzzyFailover       bool                `json:"fuzzy_failover"`
+	FuzzyFailoverMessage string             `json:"fuzzy_failover_message"`
 }
 
 // CreateGroup handles the creation of a new group.
@@ -95,6 +97,8 @@ func (s *Server) CreateGroup(c *gin.Context) {
 		ProtocolConversion:  req.ProtocolConversion,
 		UpstreamFormats:     req.UpstreamFormats,
 		StreamMode:          req.StreamMode,
+		FuzzyFailover:       req.FuzzyFailover,
+		FuzzyFailoverMessage: req.FuzzyFailoverMessage,
 	}
 
 	group, err := s.GroupService.CreateGroup(c.Request.Context(), params)
@@ -141,6 +145,8 @@ type GroupUpdateRequest struct {
 	ProtocolConversion  *bool               `json:"protocol_conversion,omitempty"`
 	UpstreamFormats     []string            `json:"upstream_formats"`
 	StreamMode          *string             `json:"stream_mode,omitempty"`
+	FuzzyFailover       *bool               `json:"fuzzy_failover,omitempty"`
+	FuzzyFailoverMessage *string            `json:"fuzzy_failover_message,omitempty"`
 }
 
 type GroupReorderItemRequest struct {
@@ -224,6 +230,8 @@ func (s *Server) UpdateGroup(c *gin.Context) {
 		params.HasUpstreamFormats = true
 	}
 	params.StreamMode = req.StreamMode
+	params.FuzzyFailover = req.FuzzyFailover
+	params.FuzzyFailoverMessage = req.FuzzyFailoverMessage
 
 	group, err := s.GroupService.UpdateGroup(c.Request.Context(), uint(id), params)
 	if s.handleGroupError(c, err) {
@@ -282,6 +290,8 @@ type GroupResponse struct {
 	ProtocolConversion  bool                `json:"protocol_conversion"`
 	UpstreamFormats     datatypes.JSON      `json:"upstream_formats"`
 	StreamMode          string              `json:"stream_mode"`
+	FuzzyFailover       bool                `json:"fuzzy_failover"`
+	FuzzyFailoverMessage string             `json:"fuzzy_failover_message"`
 	LastValidatedAt     *time.Time          `json:"last_validated_at"`
 	CreatedAt           time.Time           `json:"created_at"`
 	UpdatedAt           time.Time           `json:"updated_at"`
@@ -329,6 +339,8 @@ func (s *Server) newGroupResponse(group *models.Group) *GroupResponse {
 		ProtocolConversion:  group.ProtocolConversion,
 		UpstreamFormats:     group.UpstreamFormats,
 		StreamMode:          group.StreamMode,
+		FuzzyFailover:       group.FuzzyFailover,
+		FuzzyFailoverMessage: group.FuzzyFailoverMessage,
 		LastValidatedAt:     group.LastValidatedAt,
 		CreatedAt:           group.CreatedAt,
 		UpdatedAt:           group.UpdatedAt,

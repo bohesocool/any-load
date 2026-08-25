@@ -224,4 +224,7 @@ var MessagesEnUS = map[string]string{
 	"group.not_aggregate":              "Group is not an aggregate group",
 	"group.sub_group_already_exists":   "Sub group {{.sub_group_id}} already exists",
 	"group.sub_group_not_found":        "Sub group not found",
+
+	// Proxy-facing messages (resolved per client via Accept-Language)
+	"proxy.fuzzy_failover_message": "This request failed, please try again later.",
 }

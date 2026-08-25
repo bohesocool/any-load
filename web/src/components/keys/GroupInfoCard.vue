@@ -743,6 +743,24 @@ function resetPage() {
                     </n-tag>
                   </n-form-item>
                   <n-form-item
+                    v-if="group?.fuzzy_failover"
+                    :label="`${t('keys.fuzzyFailover')}：`"
+                    :span="2"
+                  >
+                    <n-tag type="success" size="small">
+                      {{ t("keys.fuzzyFailoverOn") }}
+                    </n-tag>
+                  </n-form-item>
+                  <n-form-item
+                    v-if="group?.fuzzy_failover && group?.fuzzy_failover_message"
+                    :label="`${t('keys.fuzzyFailoverMessage')}：`"
+                    :span="2"
+                  >
+                    <span style="font-size: 13px; color: #555">
+                      {{ group?.fuzzy_failover_message }}
+                    </span>
+                  </n-form-item>
+                  <n-form-item
                     v-if="group?.model_redirect_rules"
                     :label="`${t('keys.modelRedirectRules')}：`"
                     :span="2"

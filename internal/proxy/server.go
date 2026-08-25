@@ -17,6 +17,7 @@ import (
 	"any-load/internal/config"
 	"any-load/internal/encryption"
 	app_errors "any-load/internal/errors"
+	"any-load/internal/i18n"
 	"any-load/internal/keypool"
 	"any-load/internal/models"
 	"any-load/internal/protocol"
@@ -70,6 +71,20 @@ type affinityCtx struct {
 	entryGroupID uint          // the entry (original) group the binding is keyed under
 	ttl          time.Duration // binding TTL from effective config
 	bound        *affinity.Binding // resolved binding to replay on attempt 0 (nil = cold)
+}
+
+// resolveFuzzyFailoverMessage returns the client-facing message used to mask a
+// non-400 final error when a group has FuzzyFailover enabled. A non-empty
+// group.FuzzyFailoverMessage is used verbatim (admin override); otherwise the
+// message is localized to the client via the Accept-Language header. The
+// proxy route does not run the i18n middleware, so the locale is resolved
+// directly here — and only on this rare masked-error path, never on the
+// success hot path.
+func resolveFuzzyFailoverMessage(c *gin.Context, group *models.Group) string {
+	if group.FuzzyFailoverMessage != "" {
+		return group.FuzzyFailoverMessage
+	}
+	return i18n.T(i18n.GetLocalizer(c.GetHeader("Accept-Language")), "proxy.fuzzy_failover_message")
 }
 
 // HandleProxy is the main entry point for proxy requests, refactored based on the stable .bak logic.
@@ -506,6 +521,15 @@ func (ps *ProxyServer) executeRequestWithRetry(
 
 		// 如果是最后一次尝试，直接返回错误，不再递归
 		if isLastAttempt {
+			// 模糊重定向：重试耗尽后，非 400 的最终错误码用掩码文案，
+			// 按客户端入站格式返回，隐藏上游原始错误体（保留原状态码）。
+			// 文案优先用分组自定义值，否则按客户端 Accept-Language 多语言。
+			if group.FuzzyFailover && statusCode != 400 {
+				msg := resolveFuzzyFailoverMessage(c, group)
+				body := protocol.EmitInboundError(protocol.DetectInboundFormat(c.Request.URL.Path), statusCode, msg)
+				c.Data(statusCode, "application/json", body)
+				return
+			}
 			var errorJSON map[string]any
 			if err := json.Unmarshal([]byte(errorMessage), &errorJSON); err == nil {
 				c.JSON(statusCode, errorJSON)
@@ -536,9 +560,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 	// In conversion mode, translate the upstream response back to the client's
 	// inbound format. Otherwise (passthrough, or smart-passthrough target)
 	// forward the response as-is.
-	if conv != nil {
+	// Fuzzy failover: a 400 (bad request body) is returned directly without
+	// retry or conversion, so it falls through to the raw-forward branch below
+	// (skipping conversion, which cannot parse an error response body).
+	directReturn400 := group.FuzzyFailover && resp.StatusCode == 400
+	if conv != nil && !directReturn400 {
 		ps.dispatchConversionResponse(c, resp, conv, upstreamStream, clientStream, irModel, capture, clientCapture)
-	} else if shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
+	} else if !directReturn400 && shouldInterceptModelList(c.Request.URL.Path, c.Request.Method) {
 		// Check if this is a model list request (needs special handling)
 		ps.handleModelListResponse(c, resp, group, channelHandler, capture)
 	} else {
@@ -562,6 +590,11 @@ func (ps *ProxyServer) executeRequestWithRetry(
 func shouldFailoverOnStatusCode(statusCode int, group *models.Group) bool {
 	if group == nil {
 		return false
+	}
+	// 模糊重定向：除 400（请求体错误）外的所有错误码都触发故障转移，
+	// 覆盖分组配置的 FailoverStatusCodes。
+	if group.FuzzyFailover {
+		return statusCode >= 400 && statusCode != 400
 	}
 	return group.FailoverStatusCodeMatcher.Match(statusCode)
 }

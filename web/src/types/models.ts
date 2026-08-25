@@ -83,6 +83,8 @@ export interface Group {
   protocol_conversion: boolean;
   upstream_formats: string[];
   stream_mode: string;
+  fuzzy_failover: boolean;
+  fuzzy_failover_message: string;
   group_type?: GroupType;
   sub_groups?: SubGroupInfo[]; // 子分组列表（仅聚合分组）
   sub_group_ids?: number[]; // 子分组ID列表

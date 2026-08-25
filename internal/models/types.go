@@ -115,6 +115,18 @@ type Group struct {
 	// into SSE when the client wanted stream. Ignored when ProtocolConversion
 	// is false (and on the smart-passthrough path, where conv is nil).
 	StreamMode string `gorm:"type:varchar(32);default:'passthrough'" json:"stream_mode"`
+	// FuzzyFailover enables an opinionated error-handling mode: every upstream
+	// error code except 400 triggers failover (retry on another key), and when
+	// retries are exhausted any non-400 final error is masked with a generic
+	// client-facing message instead of the raw upstream error body. 400 (bad
+	// request body) is returned to the client directly without retry. When
+	// false, behavior is governed by FailoverStatusCodes as usual.
+	FuzzyFailover       bool                 `gorm:"default:false" json:"fuzzy_failover"`
+	// FuzzyFailoverMessage overrides the masked client-facing message used when
+	// FuzzyFailover masks a non-400 final error. Empty means the message is
+	// resolved per client via i18n (Accept-Language); a non-empty value is used
+	// verbatim, ignoring the client's language.
+	FuzzyFailoverMessage string               `gorm:"type:varchar(512)" json:"fuzzy_failover_message"`
 	TestModel           string               `gorm:"type:varchar(255);not null" json:"test_model"`
 	ParamOverrides      datatypes.JSONMap    `gorm:"type:json" json:"param_overrides"`
 	Config              datatypes.JSONMap    `gorm:"type:json" json:"config"`

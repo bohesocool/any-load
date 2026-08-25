@@ -105,6 +105,8 @@ type GroupCreateParams struct {
 	ProtocolConversion  bool
 	UpstreamFormats     []string
 	StreamMode          string
+	FuzzyFailover       bool
+	FuzzyFailoverMessage string
 }
 
 // GroupUpdateParams captures updatable fields for a group.
@@ -131,6 +133,8 @@ type GroupUpdateParams struct {
 	HasUpstreamFormats  bool
 	UpstreamFormats     []string
 	StreamMode          *string
+	FuzzyFailover       *bool
+	FuzzyFailoverMessage *string
 }
 
 // GroupReorderItem captures a group ID and target sort value.
@@ -265,6 +269,8 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		ProtocolConversion: params.ProtocolConversion,
 		UpstreamFormats:     cleanedUpstreamFormats,
 		StreamMode:          streamMode,
+		FuzzyFailover:       params.FuzzyFailover,
+		FuzzyFailoverMessage: strings.TrimSpace(params.FuzzyFailoverMessage),
 	}
 
 	tx := s.db.WithContext(ctx).Begin()
@@ -490,6 +496,14 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 
 	if params.ModelRedirectStrict != nil {
 		group.ModelRedirectStrict = *params.ModelRedirectStrict
+	}
+
+	if params.FuzzyFailover != nil {
+		group.FuzzyFailover = *params.FuzzyFailover
+	}
+
+	if params.FuzzyFailoverMessage != nil {
+		group.FuzzyFailoverMessage = strings.TrimSpace(*params.FuzzyFailoverMessage)
 	}
 
 	if params.ValidationEndpoint != nil {

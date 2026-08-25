@@ -224,4 +224,7 @@ var MessagesZhCN = map[string]string{
 	"group.not_aggregate":              "该分组不是聚合分组",
 	"group.sub_group_already_exists":   "子分组{{.sub_group_id}}已存在",
 	"group.sub_group_not_found":        "子分组不存在",
+
+	// Proxy-facing messages (resolved per client via Accept-Language)
+	"proxy.fuzzy_failover_message": "此请求错误请稍后再试",
 }

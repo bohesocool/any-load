@@ -81,6 +81,8 @@ interface GroupFormData {
   protocol_conversion: boolean;
   upstream_formats: string[];
   stream_mode: string;
+  fuzzy_failover: boolean;
+  fuzzy_failover_message: string;
   group_type?: string;
 }
 
@@ -109,6 +111,8 @@ const formData = reactive<GroupFormData>({
   protocol_conversion: false,
   upstream_formats: [],
   stream_mode: "passthrough",
+  fuzzy_failover: false,
+  fuzzy_failover_message: "",
   group_type: "standard",
 });
 
@@ -328,6 +332,8 @@ function resetForm() {
     protocol_conversion: false,
     upstream_formats: [],
     stream_mode: "passthrough",
+    fuzzy_failover: false,
+    fuzzy_failover_message: "",
     group_type: "standard",
   });
 
@@ -377,6 +383,8 @@ function loadGroupData() {
     protocol_conversion: props.group.protocol_conversion || false,
     upstream_formats: props.group.upstream_formats || [],
     stream_mode: props.group.stream_mode || "passthrough",
+    fuzzy_failover: props.group.fuzzy_failover || false,
+    fuzzy_failover_message: props.group.fuzzy_failover_message || "",
     group_type: props.group.group_type || "standard",
   });
 }
@@ -575,6 +583,8 @@ async function handleSubmit() {
       protocol_conversion: formData.protocol_conversion,
       upstream_formats: formData.protocol_conversion ? formData.upstream_formats : [],
       stream_mode: formData.protocol_conversion ? formData.stream_mode : "passthrough",
+      fuzzy_failover: formData.fuzzy_failover,
+      fuzzy_failover_message: formData.fuzzy_failover_message,
     };
 
     let res: Group;
@@ -1241,6 +1251,66 @@ async function handleSubmit() {
                   <template #feedback>
                     <div style="font-size: 14px; color: #999">
                       {{ t("keys.modelRedirectRulesDescription") }}
+                    </div>
+                  </template>
+                </n-form-item>
+              </div>
+
+              <!-- 模糊重定向（错误码故障转移 + 掩码） -->
+              <div v-if="formData.group_type !== 'aggregate'" class="config-section">
+                <n-form-item path="fuzzy_failover">
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.fuzzyFailover") }}
+                      <n-tooltip trigger="hover" placement="top">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        {{ t("keys.fuzzyFailoverTooltip") }}
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <div style="display: flex; align-items: center; gap: 12px">
+                    <n-switch v-model:value="formData.fuzzy_failover" />
+                    <span style="font-size: 14px; color: #666">
+                      {{
+                        formData.fuzzy_failover
+                          ? t("keys.fuzzyFailoverOn")
+                          : t("keys.fuzzyFailoverOff")
+                      }}
+                    </span>
+                  </div>
+                  <template #feedback>
+                    <div style="font-size: 12px; color: #999; margin: 4px 0">
+                      <div v-if="formData.fuzzy_failover" style="color: #52c41a">
+                        ✅ {{ t("keys.fuzzyFailoverInfo") }}
+                      </div>
+                    </div>
+                  </template>
+                </n-form-item>
+
+                <n-form-item
+                  v-if="formData.fuzzy_failover"
+                  path="fuzzy_failover_message"
+                >
+                  <template #label>
+                    <div class="form-label-with-tooltip">
+                      {{ t("keys.fuzzyFailoverMessage") }}
+                      <n-tooltip trigger="hover" placement="top">
+                        <template #trigger>
+                          <n-icon :component="HelpCircleOutline" class="help-icon config-help" />
+                        </template>
+                        {{ t("keys.fuzzyFailoverMessageTooltip") }}
+                      </n-tooltip>
+                    </div>
+                  </template>
+                  <n-input
+                    v-model:value="formData.fuzzy_failover_message"
+                    :placeholder="t('keys.fuzzyFailoverMessagePlaceholder')"
+                  />
+                  <template #feedback>
+                    <div style="font-size: 12px; color: #999">
+                      {{ t("keys.fuzzyFailoverMessageDescription") }}
                     </div>
                   </template>
                 </n-form-item>

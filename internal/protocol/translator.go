@@ -292,3 +292,34 @@ func PickTarget(upstreamFormats []string, inbound string) string {
 	}
 	return ""
 }
+
+// EmitInboundError builds an error response body in the given inbound format,
+// suitable for returning directly to a client that speaks that format. Used by
+// the proxy to surface a generic upstream-failure message (e.g. the "fuzzy
+// failover" masked error) in the client's native error shape rather than a
+// raw upstream body. format is a format id (as returned by DetectInboundFormat);
+// an empty/unknown format falls back to the OpenAI-style envelope.
+func EmitInboundError(format string, statusCode int, message string) []byte {
+	var body map[string]any
+	switch format {
+	case FormatAnthropic:
+		body = map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "overloaded_error", "message": message},
+		}
+	case FormatGemini:
+		body = map[string]any{
+			"error": map[string]any{
+				"code":    statusCode,
+				"message": message,
+				"status":  "UNAVAILABLE",
+			},
+		}
+	default: // openai-chat, openai-response, or unknown
+		body = map[string]any{
+			"error": map[string]any{"message": message, "type": "server_error"},
+		}
+	}
+	b, _ := json.Marshal(body)
+	return b
+}
