@@ -3,31 +3,28 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
+	"any-load/internal/channel"
 	app_errors "any-load/internal/errors"
 	"any-load/internal/models"
+	"any-load/internal/paramoverride"
 	"io"
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
 
-func (ps *ProxyServer) applyParamOverrides(bodyBytes []byte, group *models.Group) ([]byte, error) {
+func (ps *ProxyServer) applyParamOverrides(c *gin.Context, bodyBytes []byte, group *models.Group, channelHandler channel.ChannelProxy) ([]byte, error) {
 	if len(group.ParamOverrides) == 0 || len(bodyBytes) == 0 {
 		return bodyBytes, nil
 	}
 
-	var requestData map[string]any
-	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
-		logrus.Warnf("failed to unmarshal request body for param override, passing through: %v", err)
-		return bodyBytes, nil
+	ctx := paramoverride.Context{
+		Model:       channelHandler.ExtractModel(c, bodyBytes),
+		RequestPath: c.Request.URL.Path,
+		IsStream:    channelHandler.IsStreamRequest(c, bodyBytes),
 	}
-
-	for key, value := range group.ParamOverrides {
-		requestData[key] = value
-	}
-
-	return json.Marshal(requestData)
+	return paramoverride.Apply(bodyBytes, group.ParamOverrides, ctx)
 }
 
 // logUpstreamError provides a centralized way to log errors from upstream interactions.

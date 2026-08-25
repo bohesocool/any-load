@@ -655,7 +655,17 @@ response = client.messages.create(
 - **Gemini 图片 URL**：Gemini 的 `inline_data` 需要 base64。纯 `http(s)` URL 图片（非 `data:` URI）会**返回 400 拒绝**，代理不抓取——请提供 base64 或 `data:` URI。
 - **Gemini 无 call id**：解析 Gemini 时工具调用 id 合成为 `name#index`。
 - 转换模式下错误响应目前原样透传（尚未翻译为入站格式的错误形状）。
-- `param_overrides` 在转换模式下不应用（它面向 OpenAI body 字段，跨格式语义不一）。
+- `param_overrides` 作用于**入站（客户端）请求体**，透传和转换模式均生效；转换模式下覆盖后的入站字段会被翻译到上游格式。支持旧版扁平 map（`{"temperature": 0.7}`）和 `operations` 数组（在旧版 key 之后应用，冲突时以 operations 为准）。每条操作含 `mode`（`set`/`delete`/`copy`/`move`/`append`/`prepend`）、`path`（嵌套 JSON 路径，如 `messages.0.role`；`-1` 表示数组末尾）、可选 `value`/`from`/`to`/`keep_origin`，以及可选 `conditions`（含 `mode` `full`/`prefix`/`suffix`/`contains`/`gt`/`gte`/`lt`/`lte`，以及 `invert`、`pass_missing_key`、`logic` `AND`/`OR`）——仅当条件匹配时该规则才生效。示例：
+  ```json
+  {
+    "operations": [
+      {
+        "path": "temperature", "mode": "set", "value": 0.7,
+        "conditions": [ { "path": "model", "mode": "prefix", "value": "gpt-" } ]
+      }
+    ]
+  }
+  ```
 - 转换开启时，建议分组**渠道类型**与上游主格式一致（用于原生格式的密钥校验）。
 
 ## 相关项目

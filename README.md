@@ -655,7 +655,17 @@ Conversion is skipped entirely (pure pass-through) when: the switch is off, the 
 - **Gemini image URLs**: Gemini's `inline_data` requires base64. A plain `http(s)` URL image (not a `data:` URI) is **rejected with HTTP 400** rather than fetched — provide base64 or a `data:` URI.
 - **Gemini has no call IDs**: tool-call IDs are synthesized (`name#index`) when parsing Gemini.
 - Error responses in conversion mode are currently passed through as-is (the upstream error body is not yet translated to the inbound format's error shape).
-- `param_overrides` are not applied in conversion mode (they target OpenAI-body keys; their semantics differ across formats).
+- `param_overrides` are applied to the **inbound (client) request body** on both the passthrough and conversion paths; in conversion mode the overridden inbound fields are then translated to the upstream format. It supports a legacy flat map (`{"temperature": 0.7}`) and an `operations` array (applied after the legacy keys, so operations win on conflict). Each operation has `mode` (`set`/`delete`/`copy`/`move`/`append`/`prepend`), `path` (a nested JSON path, e.g. `messages.0.role`; `-1` is the last array item), optional `value`/`from`/`to`/`keep_origin`, and optional `conditions` (with `mode` `full`/`prefix`/`suffix`/`contains`/`gt`/`gte`/`lt`/`lte`, plus `invert`, `pass_missing_key`, and `logic` `AND`/`OR`) — a rule only applies when its conditions match. Example:
+  ```json
+  {
+    "operations": [
+      {
+        "path": "temperature", "mode": "set", "value": 0.7,
+        "conditions": [ { "path": "model", "mode": "prefix", "value": "gpt-" } ]
+      }
+    ]
+  }
+  ```
 - When conversion is ON, keep the group's **Channel Type** matching the primary upstream format (used for native-format key validation).
 
 ## Related Projects

@@ -250,6 +250,11 @@ func (s *GroupService) CreateGroup(ctx context.Context, params GroupCreateParams
 		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_model_redirect", map[string]any{"error": err.Error()})
 	}
 
+	// Validate param overrides format
+	if err := validateParamOverrides(params.ParamOverrides); err != nil {
+		return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_param_override", map[string]any{"error": err.Error()})
+	}
+
 	group := models.Group{
 		Name:                name,
 		DisplayName:         strings.TrimSpace(params.DisplayName),
@@ -478,6 +483,9 @@ func (s *GroupService) UpdateGroup(ctx context.Context, id uint, params GroupUpd
 	}
 
 	if params.ParamOverrides != nil {
+		if err := validateParamOverrides(params.ParamOverrides); err != nil {
+			return nil, NewI18nError(app_errors.ErrValidation, "validation.invalid_param_override", map[string]any{"error": err.Error()})
+		}
 		group.ParamOverrides = params.ParamOverrides
 	}
 
@@ -1180,4 +1188,81 @@ func validateModelRedirectRules(rules map[string]string) error {
 	}
 
 	return nil
+}
+
+// validateParamOverrides validates the operations-format portion of a
+// param-override config. The legacy flat-map portion (top-level keys other
+// than "operations") is free-form and not validated, preserving prior
+// behavior. Returns an error describing the first invalid operation.
+func validateParamOverrides(config map[string]any) error {
+	if len(config) == 0 {
+		return nil
+	}
+	raw, ok := config["operations"]
+	if !ok || raw == nil {
+		return nil // legacy flat map: free-form
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf(`"operations" must be an array`)
+	}
+	validModes := map[string]bool{
+		"set": true, "delete": true, "copy": true, "move": true,
+		"append": true, "prepend": true,
+	}
+	validCondModes := map[string]bool{
+		"full": true, "prefix": true, "suffix": true, "contains": true,
+		"gt": true, "gte": true, "lt": true, "lte": true,
+	}
+	for i, item := range arr {
+		op, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("operation #%d must be an object", i+1)
+		}
+		mode := strings.ToLower(strings.TrimSpace(strValue(op["mode"])))
+		if !validModes[mode] {
+			return fmt.Errorf("operation #%d has invalid or missing mode", i+1)
+		}
+		path := strings.TrimSpace(strValue(op["path"]))
+		from := strings.TrimSpace(strValue(op["from"]))
+		to := strings.TrimSpace(strValue(op["to"]))
+		switch mode {
+		case "set", "delete", "append", "prepend":
+			if path == "" {
+				return fmt.Errorf("operation #%d (%s) requires a path", i+1, mode)
+			}
+		case "copy", "move":
+			if from == "" || to == "" {
+				return fmt.Errorf("operation #%d (%s) requires from and to", i+1, mode)
+			}
+		}
+		if cv, exists := op["conditions"]; exists && cv != nil {
+			conds, ok := cv.([]any)
+			if !ok {
+				return fmt.Errorf("operation #%d conditions must be an array", i+1)
+			}
+			for j, c := range conds {
+				cond, ok := c.(map[string]any)
+				if !ok {
+					return fmt.Errorf("operation #%d condition #%d must be an object", i+1, j+1)
+				}
+				cm := strings.ToLower(strings.TrimSpace(strValue(cond["mode"])))
+				if !validCondModes[cm] {
+					return fmt.Errorf("operation #%d condition #%d has invalid or missing mode", i+1, j+1)
+				}
+				if _, ok := cond["path"].(string); !ok {
+					return fmt.Errorf("operation #%d condition #%d requires a path", i+1, j+1)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// strValue returns s as a string if it is one, else "".
+func strValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

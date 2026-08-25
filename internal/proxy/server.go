@@ -167,7 +167,7 @@ func (ps *ProxyServer) HandleProxy(c *gin.Context) {
 		affCtx.bound = nil
 	}
 
-	finalBodyBytes, err := ps.applyParamOverrides(bodyBytes, group)
+	finalBodyBytes, err := ps.applyParamOverrides(c, bodyBytes, group, channelHandler)
 	if err != nil {
 		response.Error(c, app_errors.NewAPIError(app_errors.ErrInternalServer, fmt.Sprintf("Failed to apply parameter overrides: %v", err)))
 		return

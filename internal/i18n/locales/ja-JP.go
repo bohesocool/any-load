@@ -56,6 +56,7 @@ var MessagesJaJP = map[string]string{
 	"validation.invalid_channel_type":    "無効なチャンネルタイプ。サポートされるタイプ: {{.types}}",
 	"validation.upstream_formats_required": "プロトコル変換を有効にする場合は上流形式を1つ以上選択してください",
 	"validation.invalid_upstream_format": "無効な上流形式: {{.format}}。サポートされる形式: {{.types}}",
+	"validation.invalid_param_override": "無効なパラメーターオーバーライド設定: {{.error}}",
 	"validation.duplicate_upstream_format": "重複する上流形式: {{.format}}",
 	"validation.test_model_empty":        "テストモデルは空またはスペースのみにできません",
 	"validation.invalid_status_value":    "無効なステータス値",

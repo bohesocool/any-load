@@ -56,6 +56,7 @@ var MessagesEnUS = map[string]string{
 	"validation.invalid_channel_type":    "Invalid channel type. Supported types: {{.types}}",
 	"validation.upstream_formats_required": "At least one upstream format is required when protocol conversion is enabled",
 	"validation.invalid_upstream_format": "Invalid upstream format: {{.format}}. Supported formats: {{.types}}",
+	"validation.invalid_param_override": "Invalid parameter override config: {{.error}}",
 	"validation.duplicate_upstream_format": "Duplicate upstream format: {{.format}}",
 	"validation.test_model_empty":        "Test model cannot be empty or contain only spaces",
 	"validation.invalid_status_value":    "Invalid status value",

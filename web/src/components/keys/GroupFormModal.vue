@@ -46,6 +46,27 @@ interface HeaderRuleItem {
   action: "set" | "remove";
 }
 
+// 参数覆盖条件类型
+interface ParamOverrideCondition {
+  path: string;
+  mode: string; // full|prefix|suffix|contains|gt|gte|lt|lte
+  value: string;
+  invert: boolean;
+  pass_missing_key: boolean;
+}
+
+// 参数覆盖操作类型
+interface ParamOverrideOperation {
+  path: string;
+  mode: string; // set|delete|copy|move|append|prepend
+  value: string; // raw text, parsed loosely on submit
+  from: string;
+  to: string;
+  keep_origin: boolean;
+  logic: string; // AND|OR
+  conditions: ParamOverrideCondition[];
+}
+
 const props = withDefaults(defineProps<Props>(), {
   group: null,
 });
@@ -71,7 +92,7 @@ interface GroupFormData {
   sort: number;
   test_model: string;
   validation_endpoint: string;
-  param_overrides: string;
+  param_overrides: ParamOverrideOperation[];
   model_redirect_rules: string;
   model_redirect_strict: boolean;
   config: Record<string, number | string | boolean>;
@@ -101,7 +122,7 @@ const formData = reactive<GroupFormData>({
   sort: 1,
   test_model: "",
   validation_endpoint: "",
-  param_overrides: "",
+  param_overrides: [] as ParamOverrideOperation[],
   model_redirect_rules: "",
   model_redirect_strict: false,
   config: {},
@@ -322,7 +343,7 @@ function resetForm() {
     sort: 1,
     test_model: isCreateMode ? testModelPlaceholder.value : "",
     validation_endpoint: "",
-    param_overrides: "",
+    param_overrides: [] as ParamOverrideOperation[],
     model_redirect_rules: "",
     model_redirect_strict: false,
     config: {},
@@ -369,7 +390,7 @@ function loadGroupData() {
     sort: props.group.sort || 1,
     test_model: props.group.test_model || "",
     validation_endpoint: props.group.validation_endpoint || "",
-    param_overrides: JSON.stringify(props.group.param_overrides || {}, null, 2),
+    param_overrides: parseParamOverridesFromGroup(props.group.param_overrides),
     model_redirect_rules: JSON.stringify(props.group.model_redirect_rules || {}, null, 2),
     model_redirect_strict: props.group.model_redirect_strict || false,
     config: {},
@@ -449,6 +470,165 @@ function removeHeaderRule(index: number) {
   formData.header_rules.splice(index, 1);
 }
 
+// --- 参数覆盖 (param overrides) ---
+
+// parseLooseValue parses a value text as JSON if possible, else returns the raw
+// string. Lets users enter 0.7 / "gpt-4" / [1,2] / true as JSON, or plain text.
+function parseLooseValue(text: string): unknown {
+  const s = text.trim();
+  if (s === "") return "";
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+}
+
+// valueToText renders a stored value as editable text (strings without quotes,
+// everything else as compact JSON).
+function valueToText(v: unknown): string {
+  if (v === undefined || v === null) return "";
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
+}
+
+// parseParamOverridesFromGroup loads the backend config into editable rows.
+// Supports the operations array format and converts legacy flat {k:v} maps
+// into set operations (lossless except for keys containing dots, which are
+// rare for API params).
+function parseParamOverridesFromGroup(
+  raw: Record<string, unknown> | undefined
+): ParamOverrideOperation[] {
+  if (!raw || typeof raw !== "object") return [];
+  const opsRaw = (raw as Record<string, unknown>).operations;
+  if (Array.isArray(opsRaw)) {
+    return opsRaw.map((op: Record<string, unknown>) => ({
+      path: String(op.path ?? ""),
+      mode: String(op.mode ?? "set"),
+      value: valueToText(op.value),
+      from: String(op.from ?? ""),
+      to: String(op.to ?? ""),
+      keep_origin: !!op.keep_origin,
+      logic: String(op.logic ?? "OR"),
+      conditions: Array.isArray(op.conditions)
+        ? op.conditions.map((c: Record<string, unknown>) => ({
+            path: String(c.path ?? ""),
+            mode: String(c.mode ?? "full"),
+            value: valueToText(c.value),
+            invert: !!c.invert,
+            pass_missing_key: !!c.pass_missing_key,
+          }))
+        : [],
+    }));
+  }
+  // Legacy flat map → one set operation per key.
+  const result: ParamOverrideOperation[] = [];
+  for (const [k, v] of Object.entries(raw)) {
+    result.push({
+      path: k,
+      mode: "set",
+      value: valueToText(v),
+      from: "",
+      to: "",
+      keep_origin: false,
+      logic: "OR",
+      conditions: [],
+    });
+  }
+  return result;
+}
+
+// serializeParamOverrides builds the backend config { operations: [...] } from
+// the editable rows, dropping empty/incomplete operations.
+function serializeParamOverrides(
+  ops: ParamOverrideOperation[]
+): Record<string, unknown> {
+  const valid = ops.filter(
+    o => o.mode === "copy" || o.mode === "move" || o.path.trim() !== ""
+  );
+  if (valid.length === 0) return {};
+  return {
+    operations: valid.map(o => {
+      const op: Record<string, unknown> = { path: o.path, mode: o.mode };
+      if (o.mode === "set" || o.mode === "append" || o.mode === "prepend") {
+        op.value = parseLooseValue(o.value);
+        op.keep_origin = o.keep_origin;
+      }
+      if (o.mode === "copy" || o.mode === "move") {
+        op.from = o.from;
+        op.to = o.to;
+      }
+      if (o.conditions.length > 0) {
+        op.conditions = o.conditions.map(c => ({
+          path: c.path,
+          mode: c.mode,
+          value: parseLooseValue(c.value),
+          invert: c.invert,
+          pass_missing_key: c.pass_missing_key,
+        }));
+        op.logic = o.logic;
+      }
+      return op;
+    }),
+  };
+}
+
+function addParamOverride() {
+  formData.param_overrides.push({
+    path: "",
+    mode: "set",
+    value: "",
+    from: "",
+    to: "",
+    keep_origin: false,
+    logic: "OR",
+    conditions: [],
+  });
+}
+
+function removeParamOverride(index: number) {
+  formData.param_overrides.splice(index, 1);
+}
+
+function addCondition(opIndex: number) {
+  formData.param_overrides[opIndex].conditions.push({
+    path: "",
+    mode: "full",
+    value: "",
+    invert: false,
+    pass_missing_key: false,
+  });
+}
+
+function removeCondition(opIndex: number, condIndex: number) {
+  formData.param_overrides[opIndex].conditions.splice(condIndex, 1);
+}
+
+const operationModeOptions = computed(() => [
+  { label: t("keys.operationModeSet"), value: "set" },
+  { label: t("keys.operationModeDelete"), value: "delete" },
+  { label: t("keys.operationModeCopy"), value: "copy" },
+  { label: t("keys.operationModeMove"), value: "move" },
+  { label: t("keys.operationModeAppend"), value: "append" },
+  { label: t("keys.operationModePrepend"), value: "prepend" },
+]);
+
+const conditionModeOptions = computed(() => [
+  { label: t("keys.conditionModeFull"), value: "full" },
+  { label: t("keys.conditionModePrefix"), value: "prefix" },
+  { label: t("keys.conditionModeSuffix"), value: "suffix" },
+  { label: t("keys.conditionModeContains"), value: "contains" },
+  { label: t("keys.conditionModeGt"), value: "gt" },
+  { label: t("keys.conditionModeGte"), value: "gte" },
+  { label: t("keys.conditionModeLt"), value: "lt" },
+  { label: t("keys.conditionModeLte"), value: "lte" },
+]);
+
+const logicOptions = computed(() => [
+  { label: t("keys.logicOr"), value: "OR" },
+  { label: t("keys.logicAnd"), value: "AND" },
+]);
+
 // 规范化Header Key到Canonical格式（模拟HTTP标准）
 function canonicalHeaderKey(key: string): string {
   if (!key) {
@@ -504,16 +684,8 @@ async function handleSubmit() {
 
     loading.value = true;
 
-    // 验证 JSON 格式
-    let paramOverrides = {};
-    if (formData.param_overrides) {
-      try {
-        paramOverrides = JSON.parse(formData.param_overrides);
-      } catch {
-        message.error(t("keys.invalidJsonFormat"));
-        return;
-      }
-    }
+    // 序列化参数覆盖操作为 { operations: [...] }
+    const paramOverrides = serializeParamOverrides(formData.param_overrides);
 
     // 验证模型重定向规则 JSON 格式
     let modelRedirectRules = {};
@@ -1329,12 +1501,144 @@ async function handleSubmit() {
                       </n-tooltip>
                     </div>
                   </template>
-                  <n-input
-                    v-model:value="formData.param_overrides"
-                    type="textarea"
-                    placeholder='{"temperature": 0.7}'
-                    :rows="4"
-                  />
+
+                  <div class="param-override-items">
+                    <div
+                      v-for="(op, index) in formData.param_overrides"
+                      :key="index"
+                      class="param-override-row"
+                    >
+                      <div class="param-override-line">
+                        <n-select
+                          v-model:value="op.mode"
+                          :options="operationModeOptions"
+                          :placeholder="t('keys.selectOperationMode')"
+                          size="small"
+                          style="flex: 0 0 130px"
+                        />
+                        <template v-if="op.mode === 'copy' || op.mode === 'move'">
+                          <n-input
+                            v-model:value="op.from"
+                            :placeholder="t('keys.operationFrom')"
+                            size="small"
+                          />
+                          <n-input
+                            v-model:value="op.to"
+                            :placeholder="t('keys.operationTo')"
+                            size="small"
+                          />
+                        </template>
+                        <n-input
+                          v-else
+                          v-model:value="op.path"
+                          :placeholder="t('keys.operationPath')"
+                          size="small"
+                        />
+                        <n-input
+                          v-if="op.mode === 'set' || op.mode === 'append' || op.mode === 'prepend'"
+                          v-model:value="op.value"
+                          :placeholder="t('keys.operationValue')"
+                          size="small"
+                        />
+                        <n-tooltip
+                          v-if="op.mode === 'set' || op.mode === 'append' || op.mode === 'prepend'"
+                          trigger="hover"
+                          placement="top"
+                        >
+                          <template #trigger>
+                            <n-switch v-model:checked="op.keep_origin" size="small" />
+                          </template>
+                          {{ t("keys.keepOriginTooltip") }}
+                        </n-tooltip>
+                        <n-button
+                          @click="removeParamOverride(index)"
+                          type="error"
+                          quaternary
+                          circle
+                          size="small"
+                        >
+                          <template #icon>
+                            <n-icon :component="Remove" />
+                          </template>
+                        </n-button>
+                      </div>
+
+                      <div class="param-override-conditions">
+                        <div v-if="op.conditions.length > 0" class="param-override-cond-header">
+                          <span class="cond-label">{{ t("keys.conditions") }}</span>
+                          <n-select
+                            v-model:value="op.logic"
+                            :options="logicOptions"
+                            size="small"
+                            style="flex: 0 0 90px"
+                          />
+                        </div>
+                        <div
+                          v-for="(cond, cIndex) in op.conditions"
+                          :key="cIndex"
+                          class="param-override-cond-line"
+                        >
+                          <n-select
+                            v-model:value="cond.mode"
+                            :options="conditionModeOptions"
+                            size="small"
+                            style="flex: 0 0 110px"
+                          />
+                          <n-input
+                            v-model:value="cond.path"
+                            :placeholder="t('keys.conditionPath')"
+                            size="small"
+                          />
+                          <n-input
+                            v-model:value="cond.value"
+                            :placeholder="t('keys.conditionValue')"
+                            size="small"
+                          />
+                          <n-tooltip trigger="hover" placement="top">
+                            <template #trigger>
+                              <n-switch v-model:checked="cond.invert" size="small" />
+                            </template>
+                            {{ t("keys.invertTooltip") }}
+                          </n-tooltip>
+                          <n-tooltip trigger="hover" placement="top">
+                            <template #trigger>
+                              <n-switch v-model:checked="cond.pass_missing_key" size="small" />
+                            </template>
+                            {{ t("keys.passMissingKeyTooltip") }}
+                          </n-tooltip>
+                          <n-button
+                            @click="removeCondition(index, cIndex)"
+                            type="error"
+                            quaternary
+                            circle
+                            size="small"
+                          >
+                            <template #icon>
+                              <n-icon :component="Remove" />
+                            </template>
+                          </n-button>
+                        </div>
+                        <n-button
+                          @click="addCondition(index)"
+                          dashed
+                          size="small"
+                          style="width: 100%"
+                        >
+                          <template #icon>
+                            <n-icon :component="Add" />
+                          </template>
+                          {{ t("keys.addCondition") }}
+                        </n-button>
+                      </div>
+                    </div>
+
+                    <n-button @click="addParamOverride" dashed style="width: 100%">
+                      <template #icon>
+                        <n-icon :component="Add" />
+                      </template>
+                      {{ t("keys.addParamOverride") }}
+                    </n-button>
+                  </div>
                 </n-form-item>
               </div>
             </n-collapse-item>
@@ -1735,6 +2039,76 @@ async function handleSubmit() {
 
   .header-actions {
     justify-content: flex-end;
+  }
+}
+
+.param-override-items {
+  width: 100%;
+}
+
+.param-override-row {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background-color: var(--bg-secondary);
+}
+
+.param-override-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.param-override-line > :not(.n-button) {
+  flex: 1;
+  min-width: 0;
+}
+
+.param-override-conditions {
+  margin-top: 8px;
+  padding-left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.param-override-cond-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cond-label {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.param-override-cond-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.param-override-cond-line > :not(.n-button) {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .param-override-line,
+  .param-override-cond-line {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .param-override-line > :not(.n-button),
+  .param-override-cond-line > :not(.n-button) {
+    flex: 1;
   }
 }
 </style>

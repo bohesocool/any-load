@@ -56,6 +56,7 @@ var MessagesZhCN = map[string]string{
 	"validation.invalid_channel_type":    "无效的通道类型。支持的类型有: {{.types}}",
 	"validation.upstream_formats_required": "开启协议转换时必须至少选择一个上游格式",
 	"validation.invalid_upstream_format": "无效的上游格式: {{.format}}。支持的格式有: {{.types}}",
+	"validation.invalid_param_override": "无效的参数覆盖配置: {{.error}}",
 	"validation.duplicate_upstream_format": "重复的上游格式: {{.format}}",
 	"validation.test_model_empty":        "测试模型不能为空或只有空格",
 	"validation.invalid_status_value":    "无效的状态值",

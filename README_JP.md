@@ -655,7 +655,17 @@ response = client.messages.create(
 - **Gemini画像URL**：Geminiの`inline_data`はbase64必須。純`http(s)` URL画像（`data:` URIでない）は**HTTP 400で拒否**されます（プロキシは取得しません）——base64または`data:` URIを提供してください。
 - **Geminiにcall idなし**：Gemini解析時にツール呼び出しidを`name#index`で合成します。
 - 変換モードのエラーレスポンスは現在そのままパススルー（上流のエラーボディを入站フォーマットのエラー形状に翻訳は未対応）。
-- `param_overrides`は変換モードでは適用されません（OpenAI bodyのキーを対象とするため、フォーマット間で意味が異なります）。
+- `param_overrides`は**インバウンド（クライアント）リクエストボディ**に適用され、パススルー・変換モード両方で有効です。変換モードでは上書き後のインバウンドフィールドが上流フォーマットに翻訳されます。旧形式のフラットマップ（`{"temperature": 0.7}`）と `operations` 配列（旧形式キーの後に適用、衝突時は operations が優先）をサポートします。各操作には `mode`（`set`/`delete`/`copy`/`move`/`append`/`prepend`）、`path`（ネストJSONパス、例: `messages.0.role`、`-1` は配列末尾）、任意の `value`/`from`/`to`/`keep_origin`、任意の `conditions`（`mode` `full`/`prefix`/`suffix`/`contains`/`gt`/`gte`/`lt`/`lte`、および `invert`、`pass_missing_key`、`logic` `AND`/`OR`）を指定でき、条件が一致した場合のみ適用されます。例:
+  ```json
+  {
+    "operations": [
+      {
+        "path": "temperature", "mode": "set", "value": 0.7,
+        "conditions": [ { "path": "model", "mode": "prefix", "value": "gpt-" } ]
+      }
+    ]
+  }
+  ```
 - 変換オン時は、グループの**チャネルタイプ**を上流の主要フォーマットと一致させることを推奨（ネイティブフォーマットのキー検証に使用）。
 
 ## 関連プロジェクト
