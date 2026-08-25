@@ -170,6 +170,8 @@ export interface RequestLog {
   is_stream: boolean;
   request_body?: string;
   response_body?: string;
+  upstream_request_body?: string;
+  client_response_body?: string;
 }
 
 export interface Pagination {

@@ -895,18 +895,41 @@ const deselectAllColumns = () => {
                   {{ formatJsonString(selectedLog.request_body) }}
                 </div>
               </div>
+
+              <div class="compact-field" v-if="selectedLog.upstream_request_body">
+                <div class="compact-field-header">
+                  <span class="compact-field-title">{{ t("logs.upstreamRequestContent") }}</span>
+                  <n-button
+                    size="tiny"
+                    text
+                    @click="
+                      copyContent(
+                        formatJsonString(selectedLog.upstream_request_body),
+                        t('logs.upstreamRequestContent')
+                      )
+                    "
+                  >
+                    <template #icon>
+                      <n-icon :component="CopyOutline" />
+                    </template>
+                  </n-button>
+                </div>
+                <div class="compact-field-content compact-field-content-tall">
+                  {{ formatJsonString(selectedLog.upstream_request_body) }}
+                </div>
+              </div>
             </div>
           </n-card>
 
           <!-- 响应信息 -->
           <n-card
-            v-if="selectedLog.response_body"
+            v-if="selectedLog.response_body || selectedLog.client_response_body"
             :title="t('logs.responseInfo')"
             size="small"
             :header-style="{ padding: '8px 12px', fontSize: '13px' }"
           >
             <div class="compact-fields">
-              <div class="compact-field">
+              <div class="compact-field" v-if="selectedLog.response_body">
                 <div class="compact-field-header">
                   <span class="compact-field-title">{{ t("logs.responseContent") }}</span>
                   <n-button
@@ -926,6 +949,29 @@ const deselectAllColumns = () => {
                 </div>
                 <div class="compact-field-content compact-field-content-tall">
                   {{ formatJsonString(selectedLog.response_body) }}
+                </div>
+              </div>
+
+              <div class="compact-field" v-if="selectedLog.client_response_body">
+                <div class="compact-field-header">
+                  <span class="compact-field-title">{{ t("logs.clientResponseContent") }}</span>
+                  <n-button
+                    size="tiny"
+                    text
+                    @click="
+                      copyContent(
+                        formatJsonString(selectedLog.client_response_body),
+                        t('logs.clientResponseContent')
+                      )
+                    "
+                  >
+                    <template #icon>
+                      <n-icon :component="CopyOutline" />
+                    </template>
+                  </n-button>
+                </div>
+                <div class="compact-field-content compact-field-content-tall">
+                  {{ formatJsonString(selectedLog.client_response_body) }}
                 </div>
               </div>
             </div>

@@ -517,6 +517,8 @@ export default {
     requestContent: "Request Content",
     responseInfo: "Response Information",
     responseContent: "Response Content",
+    upstreamRequestContent: "Upstream Request Content",
+    clientResponseContent: "Client Response Content",
     errorInfo: "Error Information",
     customColumns: "Custom Columns",
   },

@@ -173,6 +173,16 @@ type RequestLog struct {
 	// avoiding MySQL's 64KB `text` limit that used to truncate logged bodies.
 	RequestBody  string `json:"request_body"`
 	ResponseBody string `json:"response_body"`
+	// UpstreamRequestBody is the request body actually sent to the upstream
+	// (differs from RequestBody in protocol-conversion mode, where the inbound
+	// body is translated to the target format). Empty in passthrough mode,
+	// where it equals RequestBody.
+	UpstreamRequestBody string `json:"upstream_request_body"`
+	// ClientResponseBody is the response body actually returned to the client
+	// (differs from ResponseBody in protocol-conversion mode, where the
+	// upstream response is translated back to the inbound format). Empty in
+	// passthrough mode, where it equals ResponseBody.
+	ClientResponseBody string `json:"client_response_body"`
 }
 
 // StatCard 用于仪表盘的单个统计卡片数据

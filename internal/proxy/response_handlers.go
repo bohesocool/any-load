@@ -65,6 +65,21 @@ func (rc *responseCapture) bodyForLog(resp *http.Response) string {
 	return body
 }
 
+// bodyForLogRaw returns the captured bytes as a string for logging without
+// any Content-Encoding decompression. It is used for the client-facing
+// response, which is already the final text we wrote to the client (no
+// upstream Content-Encoding applies to it).
+func (rc *responseCapture) bodyForLogRaw() string {
+	if rc == nil || rc.buf.Len() == 0 {
+		return ""
+	}
+	body := rc.buf.String()
+	if rc.truncated {
+		body += "\n...[response body truncated]"
+	}
+	return body
+}
+
 func (ps *ProxyServer) handleStreamingResponse(c *gin.Context, resp *http.Response, capture *responseCapture) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

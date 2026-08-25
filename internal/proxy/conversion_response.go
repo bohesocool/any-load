@@ -17,9 +17,9 @@ import (
 // writes it to the client. Non-stream responses are translated as a whole;
 // streaming responses are translated chunk-by-chunk as SSE. The raw upstream
 // body (decompressed) is copied into capture for request logging when set.
-func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, isStream bool, capture *responseCapture) {
+func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, isStream bool, capture *responseCapture, clientCapture *responseCapture) {
 	if isStream {
-		ps.handleStreamingConversionResponse(c, resp, conv, capture)
+		ps.handleStreamingConversionResponse(c, resp, conv, capture, clientCapture)
 		return
 	}
 
@@ -52,6 +52,9 @@ func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Res
 
 	c.Header("Content-Type", conv.inHandler.InboundContentType())
 	c.Status(resp.StatusCode)
+	if clientCapture != nil {
+		clientCapture.Write(out)
+	}
 	if _, err := c.Writer.Write(out); err != nil {
 		logrus.WithError(err).Error("Failed to write conversion response")
 	}
@@ -61,7 +64,7 @@ func (ps *ProxyServer) dispatchConversionResponse(c *gin.Context, resp *http.Res
 // handler's format), converts them to IR stream events via the upstream parser,
 // then to the client's inbound SSE format via the inbound emitter, and streams
 // them to the client. The emitter's Done() frames terminate the stream.
-func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, capture *responseCapture) {
+func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *http.Response, conv *convCtx, capture *responseCapture, clientCapture *responseCapture) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -70,7 +73,7 @@ func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *h
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		logrus.Error("Streaming unsupported by the writer, falling back to normal response")
-		ps.dispatchConversionResponse(c, resp, conv, false, capture)
+		ps.dispatchConversionResponse(c, resp, conv, false, capture, clientCapture)
 		return
 	}
 
@@ -86,16 +89,18 @@ func (ps *ProxyServer) handleStreamingConversionResponse(c *gin.Context, resp *h
 
 	writeChunks := func(chunks []protocol.StreamChunk) bool {
 		for _, ch := range chunks {
+			var frame string
 			if ch.Event != "" {
-				if _, werr := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", ch.Event, ch.Data); werr != nil {
-					logrus.WithError(werr).Error("Failed to write converted SSE chunk")
-					return false
-				}
+				frame = fmt.Sprintf("event: %s\ndata: %s\n\n", ch.Event, ch.Data)
 			} else {
-				if _, werr := fmt.Fprintf(c.Writer, "data: %s\n\n", ch.Data); werr != nil {
-					logrus.WithError(werr).Error("Failed to write converted SSE chunk")
-					return false
-				}
+				frame = fmt.Sprintf("data: %s\n\n", ch.Data)
+			}
+			if clientCapture != nil {
+				clientCapture.Write([]byte(frame))
+			}
+			if _, werr := c.Writer.Write([]byte(frame)); werr != nil {
+				logrus.WithError(werr).Error("Failed to write converted SSE chunk")
+				return false
 			}
 		}
 		flusher.Flush()

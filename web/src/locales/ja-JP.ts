@@ -518,6 +518,8 @@ export default {
     requestContent: "リクエスト内容",
     responseInfo: "レスポンス情報",
     responseContent: "レスポンス内容",
+    upstreamRequestContent: "アップストリーム送信内容",
+    clientResponseContent: "クライアント返送内容",
     errorInfo: "エラー情報",
     customColumns: "カラムのカスタマイズ",
   },

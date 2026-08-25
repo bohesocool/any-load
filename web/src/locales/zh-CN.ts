@@ -501,6 +501,8 @@ export default {
     requestContent: "请求内容",
     responseInfo: "响应信息",
     responseContent: "响应内容",
+    upstreamRequestContent: "发往上游的请求内容",
+    clientResponseContent: "返回客户端的响应内容",
     errorInfo: "错误信息",
     customColumns: "自定义列",
   },
