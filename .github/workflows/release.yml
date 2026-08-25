@@ -111,9 +111,10 @@ jobs:
         id: changelog
         run: |
           # Find the previous tag on our own v1.0.x line to scope the changelog.
-          # Excludes upstream fork tags (v1.0.10+ / v1.1+) and beta tags.
+          # Matches any patch number (including multi-digit like v1.0.10).
+          # Excludes other release lines (e.g. v1.1.x) and beta tags.
           CURRENT_TAG="${GITHUB_REF_NAME}"
-          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v1\.0\.[0-9]$' | grep -v "^${CURRENT_TAG}$" | head -1 || true)
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v1\.0\.[0-9]+$' | grep -v "^${CURRENT_TAG}$" | head -1 || true)
           if [ -n "${PREV_TAG}" ]; then
             RANGE="${PREV_TAG}..${CURRENT_TAG}"
             COMPARE_BASE="${PREV_TAG}"
