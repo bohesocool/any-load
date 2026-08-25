@@ -267,6 +267,7 @@ Supported Proxy Protocol Formats:
 | -------------------------- | --------------------------------- | ------- | -------------- | -------------------------------------------------------------------------- |
 | Max Retries                | `max_retries`                     | 3       | ✅             | Maximum retry count using different keys for single request                |
 | Blacklist Threshold        | `blacklist_threshold`             | 3       | ✅             | After how many cumulative failures does the key get blacklisted            |
+| Uncounted Status Codes     | `uncounted_status_codes`          | (empty) | ✅             | Status codes that still retry but skip failure accounting; never disables account. Empty = no exemption |
 | Key Validation Interval    | `key_validation_interval_minutes` | 60      | ✅             | Background scheduled key validation cycle (minutes)                        |
 | Key Validation Concurrency | `key_validation_concurrency`      | 10      | ✅             | Concurrency for background validation of invalid keys                      |
 | Key Validation Timeout     | `key_validation_timeout_seconds`  | 20      | ✅             | API request timeout for validating individual keys in background (seconds) |

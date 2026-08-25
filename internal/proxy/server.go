@@ -487,8 +487,13 @@ func (ps *ProxyServer) executeRequestWithRetry(
 			upstreamRespBody = errorMessage
 		}
 
-		// 使用解析后的错误信息更新密钥状态
-		ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
+		// 命中分组配置的"不计入失败"状态码：仍重试换 key，但不累计失败次数、不禁用账号
+		if err == nil && group.UncountedStatusCodeMatcher.Match(statusCode) {
+			logrus.Debugf("Status %d is in uncounted set for group %s, skipping failure accounting (will still retry)", statusCode, group.Name)
+		} else {
+			// 使用解析后的错误信息更新密钥状态
+			ps.keyProvider.UpdateStatus(apiKey, group, false, parsedError)
+		}
 
 		// 判断是否为最后一次尝试
 		isLastAttempt := retryCount >= cfg.MaxRetries

@@ -170,6 +170,8 @@ var MessagesEnUS = map[string]string{
 	"config.blacklist_threshold_desc":        "After how many cumulative failures does a Key enter the blacklist; 0 means do not blacklist.",
 	"config.failover_status_codes":           "Failover Status Codes",
 	"config.failover_status_codes_desc":      "Complete list of upstream HTTP status codes that trigger failover (retry). Supports comma-separated values and ranges, e.g.: 400-403,405-999,250-260. Groups can override this value individually.",
+	"config.uncounted_status_codes":          "Uncounted Status Codes",
+	"config.uncounted_status_codes_desc":     "Upstream HTTP status codes that still trigger failover (retry) but are NOT counted toward a key's failure count, so they never disable the account. Supports comma-separated values and ranges, e.g.: 429,503. Groups can override this value individually. Empty means no exemption.",
 	"config.key_validation_interval":         "Key Validation Interval (minutes)",
 	"config.key_validation_interval_desc":    "Default interval (minutes) for background key validation.",
 	"config.key_validation_concurrency":      "Key Validation Concurrency",

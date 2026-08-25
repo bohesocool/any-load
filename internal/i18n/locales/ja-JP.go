@@ -170,6 +170,8 @@ var MessagesJaJP = map[string]string{
 	"config.blacklist_threshold_desc":        "ある Key が累計で何回失敗するとブラックリストに入るか。0 はブラックリストに入れないことを意味する。",
 	"config.failover_status_codes":           "フェイルオーバーステータスコード",
 	"config.failover_status_codes_desc":      "フェイルオーバー（リトライ）をトリガーする上流 HTTP ステータスコードの完全なリスト。カンマ区切りと範囲指定に対応（例：400-403,405-999,250-260）。グループごとに個別上書き可能。",
+	"config.uncounted_status_codes":          "失敗カウント除外ステータスコード",
+	"config.uncounted_status_codes_desc":     "これらの HTTP ステータスコードに命中した場合、フェイルオーバー（リトライ）は発動するが、Key の失敗回数にはカウントされないため、アカウント無効化には繋がらない。カンマ区切りと範囲指定に対応（例：429,503）。グループごとに個別上書き可能。空欄は除外なし。",
 	"config.key_validation_interval":         "キー検証間隔（分）",
 	"config.key_validation_interval_desc":    "バックグラウンドキー検証のデフォルト間隔（分）。",
 	"config.key_validation_concurrency":      "キー検証並行数",

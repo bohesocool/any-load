@@ -170,6 +170,8 @@ var MessagesZhCN = map[string]string{
 	"config.blacklist_threshold_desc":        "一个 Key 累计失败多少次后进入黑名单，0为不拉黑。",
 	"config.failover_status_codes":           "故障转移状态码",
 	"config.failover_status_codes_desc":      "触发故障转移（重试）的上游 HTTP 状态码完整列表，支持逗号分隔和范围，例如：400-403,405-999,250-260。分组可单独覆盖此值。",
+	"config.uncounted_status_codes":          "不计入失败的状态码",
+	"config.uncounted_status_codes_desc":     "命中这些 HTTP 状态码时仍会触发故障转移（重试），但不计入 Key 的失败次数，因此不会因此禁用账号。支持逗号分隔和范围，例如：429,503。分组可单独覆盖此值。留空表示不豁免。",
 	"config.key_validation_interval":         "密钥验证间隔（分钟）",
 	"config.key_validation_interval_desc":    "后台验证密钥的默认间隔（分钟）。",
 	"config.key_validation_concurrency":      "密钥验证并发数",

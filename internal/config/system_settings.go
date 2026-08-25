@@ -34,7 +34,8 @@ func NewSystemSettingsManager() *SystemSettingsManager {
 }
 
 func validateStringSettingValue(key, val string) error {
-	if key == "failover_status_codes" {
+	switch key {
+	case "failover_status_codes", "uncounted_status_codes":
 		if _, err := failover.ParseStatusCodeMatcher(val); err != nil {
 			return fmt.Errorf("invalid value for %s (%q): %w", key, val, err)
 		}
@@ -427,6 +428,7 @@ func (sm *SystemSettingsManager) DisplaySystemConfig(settings types.SystemSettin
 	logrus.Infof("    Max Retries: %d", settings.MaxRetries)
 	logrus.Infof("    Blacklist Threshold: %d", settings.BlacklistThreshold)
 	logrus.Infof("    Failover Status Codes: %s", settings.FailoverStatusCodes)
+	logrus.Infof("    Uncounted Status Codes: %s", settings.UncountedStatusCodes)
 	logrus.Infof("    Key Validation Interval: %d minutes", settings.KeyValidationIntervalMinutes)
 	logrus.Info("====================================")
 	logrus.Info("")
